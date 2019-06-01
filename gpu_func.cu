@@ -35,12 +35,12 @@ int useless_gpu_add_one(int t) {
 
 // all matrices assumed column major
 template<typename T>
-__global__ void naive_gemm_kernel(T const * __restrict__ A,
-                                  T const * __restrict__ B,
-                                  T * __restrict__ C,
-                                  T const alpha,
-                                  T const beta,
-                                  int M, int N, int K)
+__global__ void simple_gemm_kernel(T const * __restrict__ A,
+                                   T const * __restrict__ B,
+                                   T * __restrict__ C,
+                                   T const alpha,
+                                   T const beta,
+                                   int M, int N, int K)
 {
     int const offset = blockDim.x * blockIdx.x + threadIdx.x;
     
@@ -59,14 +59,16 @@ __global__ void naive_gemm_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void naive_gemm(T const * A, T const * B, T * C,
-                T const alpha, T const beta,
-                int M, int N, int K) 
+void simple_gemm_wrapper(T const * A, T const * B, T * C,
+                         T const alpha, T const beta,
+                         int M, int N, int K) 
 {
-    int constexpr threads = 192;
+    int const threads = 192;
     int const blocks = (M * N + threads - 1) / threads;
     
-    naive_gemm_kernel<<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    simple_gemm_kernel<<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    
+    check_launch("simple_gemm");
 }
 
 /*
@@ -77,7 +79,7 @@ int myGEMM(double* __restrict__ A, double* __restrict__ B,
            int M, int N, int K) 
 {
     /* TODO: Write an efficient GEMM implementation on GPU */
-    naive_gemm(A, B, C, *alpha, *beta, M, N, K);
+    simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
 
     return 0;
 }
@@ -139,14 +141,16 @@ struct mult
     {
         return x0 * x1;
     }
+    
+    // no atomic version in CUDA
 };
  
-struct max 
+struct greater_of
 {
     template<typename T>
     static inline __device__ T apply(T const & x0, T const & x1)
     {
-        return max(x0, x1); // TODO CUDA intrinsic?
+        return max(x0, x1);
     }
     
     template<typename T>
@@ -159,9 +163,7 @@ struct max
 }
 
 template<int warp_size, int num_warps, typename T>
-__global__ void transpose2D_kernel(T const * __restrict__ src,
-                                   T * __restrict__ dst,
-                                   int M, int N)
+__global__ void transpose_kernel(T const * __restrict__ src,  T * __restrict__ dst, int M, int N)
 {
     // transpose a square block of size warp_size
     T __shared__ sdata[warp_size][warp_size+1];
@@ -208,30 +210,17 @@ __global__ void transpose2D_kernel(T const * __restrict__ src,
 }
 
 template<typename T>
-void transpose2D(T const * src, T * dst, int M, int N)
+void transpose_wrapper(T const * src, T * dst, int M, int N)
 {
-    int constexpr warp_size = 32;
-    int constexpr num_warps = 256 / 32;
+    int const warp_size = 32;
+    int const num_warps = 256 / 32;
     
-    dim3 const threads = { warp_size, num_warps };
-    dim3 const blocks  = { (M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y };
+    dim3 const threads(warp_size, num_warps);
+    dim3 const blocks((M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y);
     
-    transpose2D_kernel<warp_size, num_warps><<<blocks, threads>>>(src, dst, M, N);
-}
-
-template<typename T>
-void transpose(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    assert(dst.nrow() == src.ncol() && dst.ncol() == src.nrow());
-    transpose2D(src.data(), dst.data(), src.nrow(), src.ncol());
-}
-
-template<typename T>
-DeviceMat<T> transpose(DeviceMat<T> const & src)
-{
-    DeviceMat<T> dst(src.ncol(), src.nrow());
-    transpose(src, dst);
-    return dst;
+    transpose_kernel<warp_size, num_warps><<<blocks, threads>>>(src, dst, M, N);
+    
+    check_launch("transpose");
 }
 
 template<int block_size, typename OP, typename T>
@@ -268,9 +257,9 @@ __global__ void block_reduce_kernel(T const * __restrict__ data, T * __restrict_
 }
 
 template<typename OP, typename T>
-void block_reduce(T const * data, T * res, int N)
+void reduce_wrapper(T const * data, T * res, int N)
 {
-    int constexpr threads = 256;
+    int const threads = 256;
     int const blocks = (N + 2 * threads - 1) / (2 * threads);
     
     T * block_res;
@@ -278,9 +267,11 @@ void block_reduce(T const * data, T * res, int N)
     
     block_reduce_kernel<threads, OP><<<blocks, threads>>>(data, block_res, N);
     
+    check_launch("reduce");
+    
     if (blocks > 1)
     {
-        block_reduce<OP>(block_res, res, blocks);
+        reduce_wrapper<OP>(block_res, res, blocks);
     }
     else
     {
@@ -290,93 +281,7 @@ void block_reduce(T const * data, T * res, int N)
     cudaFree(block_res);
 }
 
-template<typename OP, typename T>
-void colreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    assert(dst.nrow() == 1 && dst.ncol() == src.ncol());
-    
-    // TODO run all column reductions in one kernel
-    for (int j = 0; j < src.ncol(); ++j)
-    {
-        block_reduce<OP>(src.col(j), dst.col(j), src.nrow());
-    }
-}
 
-template<typename OP, typename T>
-DeviceMat<T> colreduce(DeviceMat<T> const & src)
-{
-    DeviceMat<T> dst(1, src.ncol());
-    colreduce<OP>(src, dst);
-    return dst;
-}
-
-template<typename OP, typename T>
-void rowreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    assert(dst.ncol() == 1 && dst.nrow() == src.nrow());
-    
-    // TODO proper row reduction without transpose
-    DeviceMat<T> src_temp = transpose(src);
-    DeviceMat<T> dst_temp(1, src_temp.ncol());
-    colreduce<OP>(src_temp, dst_temp);
-    dst = transpose(dst_temp);
-}
-
-template<typename OP, typename T>
-DeviceMat<T> rowreduce(DeviceMat<T> const & src)
-{
-    DeviceMat<T> dst(src.nrow(), 1);
-    rowreduce<OP>(src, dst);
-    return dst;
-}
-
-template<typename T>
-void colsum(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    colreduce<bin_ops::add>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> colsum(DeviceMat<T> const & src)
-{
-    return colreduce<bin_ops::add>(src);
-}
-
-template<typename T>
-void colmax(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    colreduce<bin_ops::max>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> colmax(DeviceMat<T> const & src)
-{
-    return colreduce<bin_ops::max>(src);
-}
-
-template<typename T>
-void rowsum(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    rowreduce<bin_ops::add>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> rowsum(DeviceMat<T> const & src)
-{
-    return rowreduce<bin_ops::add>(src);
-}
-
-template<typename T>
-void rowmax(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    rowreduce<bin_ops::max>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> rowmax(DeviceMat<T> const & src)
-{
-    return rowreduce<bin_ops::max>(src);
-}
 
 template<typename T>
 __global__ void coldiv_kernel(T * __restrict__ data, T const * __restrict__ divs, int M, int N)
@@ -393,25 +298,16 @@ __global__ void coldiv_kernel(T * __restrict__ data, T const * __restrict__ divs
 }
 
 template<typename T>
-void coldiv(DeviceMat<T> & mat, DeviceMat<T> const & divs)
+void coldiv_wrapper(T * data, T const * divs, int M, int N)
 {
-    assert(divs.nrow() == 1 && divs.ncol() == mat.ncol());
+    int const threads = 192;
+    int const blocks = (M * N + threads - 1) / threads;
     
-    int constexpr threads = 192;
-    int const blocks = (mat.size() + threads - 1) / threads;
+    coldiv_kernel<<<blocks, threads>>>(data, divs, M, N);
     
-    coldiv_kernel<<<blocks, threads>>>(mat.data(), divs.data(), mat.nrow(), mat.ncol());
+    check_launch("coldiv");
 }
 
-template<typename T>
-void normalize(DeviceMat<T> & mat)
-{
-    // 1-norms of each column (assuming non-negative elements)
-    DeviceMat<T> norms(1, mat.ncol());
-    
-    colsum(mat, norms);
-    coldiv(mat, norms);
-}
 
 template<typename OP, typename T>
 __global__ void apply_kernel(T const * src, T * dst, int N)
@@ -425,22 +321,14 @@ __global__ void apply_kernel(T const * src, T * dst, int N)
 }
 
 template<typename OP, typename T>
-void apply(DeviceMat<T> const & src, DeviceMat<T> & dst)
+void apply_wrapper(T const * src, T * dst, int N)
 {
-    assert(dst.nrow() == src.nrow() && dst.ncol() == src.ncol());
+    int const threads = 192;
+    int const blocks = (N + threads - 1) / threads;
     
-    int constexpr threads = 192;
-    int const blocks = (src.size() + threads - 1) / threads;
+    apply_kernel<OP><<<blocks, threads>>>(src, dst, N);
     
-    apply_kernel<OP><<<blocks, threads>>>(src.data(), dst.data(), src.size());
-}
-
-template<typename OP, typename T>
-DeviceMat<T> apply(DeviceMat<T> const & src)
-{
-    DeviceMat<T> dst(src.nrow(), src.ncol());
-    apply<OP>(src, dst);
-    return dst;
+    check_launch("apply");
 }
 
 template<typename OP, typename T>
@@ -455,101 +343,16 @@ __global__ void combine_kernel(T const * src1, T const * src2, T * dst, int N)
 }
 
 template<typename OP, typename T>
-void combine(DeviceMat<T> const & src1, DeviceMat<T> const & src2, DeviceMat<T> & dst)
+void combine_wrapper(T const * src1, T const * src2, T * dst, int N)
 {
-    assert(dst.nrow() == src1.nrow() && dst.ncol() == src1.ncol() && src2.nrow() == src1.nrow() && src2.ncol() == src1.ncol());
+    int const threads = 192;
+    int const blocks = (N + threads - 1) / threads;
     
-    int constexpr threads = 192;
-    int const blocks = (src1.size() + threads - 1) / threads;
+    combine_kernel<OP><<<blocks, threads>>>(src1, src2, dst, N);
     
-    combine_kernel<OP><<<blocks, threads>>>(src1.data(), src2.data(), dst.data(), src1.size());
+    check_launch("combine");
 }
 
-template<typename OP, typename T>
-DeviceMat<T> combine(DeviceMat<T> const & src1, DeviceMat<T> const & src2)
-{
-    DeviceMat<T> dst(src1.nrow(), src1.ncol());
-    combine<OP>(src1, src2, dst);
-    return dst;
-}
-
-template<typename T>
-void exp(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    apply<un_ops::exponent>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> exp(DeviceMat<T> const & src)
-{
-    return apply<un_ops::exponent>(src);
-}
-
-template<typename T>
-void sigmoid(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    apply<un_ops::sigmoid>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> sigmoid(DeviceMat<T> const & src)
-{
-    return apply<un_ops::sigmoid>(src);
-}
-
-template<typename T>
-void sigmoid_derivative(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    apply<un_ops::x_times_1_minus_x>(src, dst);
-}
-
-template<typename T>
-DeviceMat<T> sigmoid_derivative(DeviceMat<T> const & src)
-{
-    return apply<un_ops::x_times_1_minus_x>(src);
-}
-
-template<typename T>
-void softmax(DeviceMat<T> const & src, DeviceMat<T> & dst)
-{
-    exp(src, dst);
-    normalize(dst);
-}
-
-template<typename T>
-DeviceMat<T> softmax(DeviceMat<T> const & src)
-{
-    DeviceMat<T> dst(src.nrow(), src.ncol());
-    softmax(src, dst);
-    return dst;
-}
-
-template<typename T>
-void gemm(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> & C)
-{
-    assert(C.nrow() == A.nrow() && C.ncol() == B.ncol());
-    naive_gemm(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-}
-
-template<typename T>
-DeviceMat<T> matmult(DeviceMat<T> const & A, DeviceMat<T> const & B)
-{
-    DeviceMat<T> C(A.nrow(), B.ncol());
-    gemm(T(1), A, B, T(0), C);
-    return C;
-}
-
-template<typename T>
-void hadamard(DeviceMat<T> const & A, DeviceMat<T> const & B, DeviceMat<T> & C)
-{
-    combine<bin_ops::mult>(A, B, C);
-}
-
-template<typename T>
-DeviceMat<T> hadamard(DeviceMat<T> const & A, DeviceMat<T> const & B)
-{
-    return combine<bin_ops::mult>(A, B);
-}
 
 template<typename T>
 __global__ void axpby_kernel(T const a, T const * X, T const b, T const * Y, T * Z, int N)
@@ -563,54 +366,32 @@ __global__ void axpby_kernel(T const a, T const * X, T const b, T const * Y, T *
 }
 
 template<typename T>
-void axpby(T a, DeviceMat<T> const & X, T b, DeviceMat<T> const & Y, DeviceMat<T> & Z)
+void axpby_wrapper(T a, T const * X, T b, T const * Y, T * Z, int N)
 {
-    assert(Z.nrow() == X.nrow() && Z.ncol() == X.ncol() && X.nrow() == Y.nrow() && X.ncol() == Y.ncol());
+    int const threads = 192;
+    int const blocks = (N + threads - 1) / threads;
     
-    int constexpr threads = 192;
-    int const blocks = (X.size() + threads - 1) / threads;
+    axpby_kernel<<<blocks, threads>>>(a, X, b, Y, Z, N);
     
-    axpby_kernel<<<blocks, threads>>>(a, X.data(), b, Y.data(), Z.data(), X.size());
+    check_launch("axpby");
 }
 
-template<typename T>
-DeviceMat<T> axpby(T a, DeviceMat<T> const & X, T b, DeviceMat<T> const & Y)
-{
-    DeviceMat<T> Z(X.nrow(), X.ncol());
-    axpby(a, X, b, Y, Z);
-    return Z;
-}
+/**
+ * Invoke template instantiations for required parameter types
+ */
 
-template<typename T>
-DeviceMat<T> sum(DeviceMat<T> const & src, int dim)
-{
-    if (dim == 0)
-    {
-        return colsum(src);
-    }
-    else if (dim == 1)
-    {
-        return rowsum(src);
-    }
-    else
-    {
-        std::cerr << "repmat(): invalid dim: " << dim << std::endl;
-        exit(1);
-    }
-}
+#define INST_WRAPPER_TEMPLATES(T) \
+template void simple_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
+template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int N); \
+template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int N); \
+template void coldiv_wrapper<T>(T * data, T const * divs, int M, int N); \
+template void apply_wrapper<un_ops::exponent,T>(T const * src, T * dst, int N); \
+template void apply_wrapper<un_ops::sigmoid,T>(T const * src, T * dst, int N); \
+template void apply_wrapper<un_ops::x_times_1_minus_x,T>(T const * src, T * dst, int N); \
+template void combine_wrapper<bin_ops::mult,T>(T const * src1, T const * src2, T * dst, int N); \
+template void axpby_wrapper<T>(T a, T const * X, T b, T const * Y, T * Z, int N);
 
-#define INST_TMP_DMAT_FUNCS(T) \
-template void gemm<T>(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> & C); \
-template void hadamard<T>(DeviceMat<T> const & A, DeviceMat<T> const & B, DeviceMat<T> & C); \
-template DeviceMat<T> matmult(DeviceMat<T> const & A, DeviceMat<T> const & B); \
-template DeviceMat<T> sigmoid<T>(DeviceMat<T> const & A); \
-template DeviceMat<T> sigmoid_derivative<T>(DeviceMat<T> const & A); \
-template DeviceMat<T> softmax<T>(DeviceMat<T> const & A); \
-template DeviceMat<T> transpose<T>(DeviceMat<T> const & A); \
-template DeviceMat<T> axpby<T>(T a, DeviceMat<T> const & X, T b, DeviceMat<T> const & Y); \
-template void axpby<T>(T a, DeviceMat<T> const & X, T b, DeviceMat<T> const & Y, DeviceMat<T> & Z); \
-template DeviceMat<T> sum<T>(DeviceMat<T> const & A, int dim);
-
-INST_TMP_DMAT_FUNCS(double)
+INST_WRAPPER_TEMPLATES(double)
     
-#undef INST_TMP_DMAT_FUNCS
+#undef INST_WRAPPER_TEMPLATES

@@ -291,6 +291,451 @@ void train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
 
 /* GPU IMPLEMENTATIONS */
 
+/**
+ * @class DeviceMat
+ * @brief Lightweight device matrix class to simplify memory management and argument passing
+ *
+ * @note Supports copy and move constructions/assignment, safe to return by value
+ *
+ * @note To be used only with primitive types. Does not call object constructors when copying!
+ */
+template<typename T>
+class DeviceMat
+{
+public:
+
+    DeviceMat() : DeviceMat(0, 0) {}
+
+    DeviceMat(int M, int N) : m_data(nullptr)
+    {
+        allocate(M, N);
+    }
+    
+    ~DeviceMat()
+    {
+        deallocate();
+    }
+    
+    DeviceMat(DeviceMat<T> const & other)
+    {
+        allocate(other.nrow(), other.ncol());
+        copy_from_device(other.data());
+    }
+    
+    DeviceMat(DeviceMat<T> && other)
+    {
+        setsize(other.nrow(), other.ncol());
+        std::swap(m_data, other.m_data);
+    }
+    
+    DeviceMat<T> & operator=(DeviceMat<T> const & other)
+    {
+        if (&other != this)
+        {
+            resize(other.nrow(), other.ncol());
+            copy_from_device(other.data());
+        }
+        return *this;
+    }
+    
+    DeviceMat<T> & operator=(DeviceMat<T> && other)
+    {
+        if (&other != this)
+        {
+            setsize(other.nrow(), other.ncol());
+            std::swap(m_data, other.m_data);
+        }
+        return *this;
+    }
+    
+    void resize(int M, int N)
+    {
+        if (M != nrow() || N != ncol())
+        {
+            deallocate();
+            allocate(M, N);
+        }
+    }
+    
+    void setzero()
+    {
+        if (size() > 0)
+        {
+            cudaMemset(m_data, 0, bytes());
+        }
+    }
+    
+    int nrow() const  { return m_nrow; }
+    int ncol() const  { return m_ncol; }
+    int size() const  { return m_nrow * m_ncol; }
+    int bytes() const { return size() * sizeof(T); }
+    
+    T       * data()       { return m_data; };
+    T const * data() const { return m_data; };
+    
+    T       * col(int j)       { assert(j < m_ncol); return m_data + j * nrow(); }
+    T const * col(int j) const { assert(j < m_ncol); return m_data + j * nrow(); }
+    
+    void copy_from_device(T const * src)
+    {
+        cudaMemcpy(m_data, src, bytes(), cudaMemcpyDeviceToDevice);
+    }
+    
+    void copy_from_host(T const * src)
+    {
+        cudaMemcpy(m_data, src, bytes(), cudaMemcpyHostToDevice);
+    }
+    
+    void copy_to_host(T * dst) const
+    {
+        cudaMemcpy(dst, m_data, bytes(), cudaMemcpyDeviceToHost);
+    }
+    
+    void print(std::ostream & os = std::cout) const
+    {
+        T * temp = new T[size()];
+        copy_to_host(temp);
+        
+        os << std::scientific;
+        for (int i = 0; i < m_nrow; ++i)
+        {
+            for (int j = 0; j < m_ncol; ++j)
+            {
+                os << std::right << std::setw(13) << std::setprecision(4) << temp[j * m_nrow + i];
+            }
+            os << std::endl;
+        }
+        
+        delete[] temp;
+    }
+
+private:
+
+    void setsize(int M, int N)
+    {
+        assert(M >= 0 && N >= 0);
+        m_nrow = M;
+        m_ncol = N;
+    }
+
+    void allocate(int M, int N)
+    {
+        setsize(M, N);
+        if (size() > 0)
+        {
+            cudaMalloc((void**) &m_data, bytes());
+        }
+    }
+    
+    void deallocate()
+    {
+        cudaFree(m_data);
+    }
+
+    int m_nrow;
+    int m_ncol;
+    T * m_data;
+};
+
+template<typename T>
+DeviceMat<T> repmat(DeviceMat<T> const & src, int dim, int times)
+{
+    DeviceMat<T> dst;
+    
+    if (dim == 0)
+    {
+        dst.resize(src.nrow() * times, src.ncol());
+        for (int j = 0; j < src.ncol(); ++j)
+        {
+            for (int rep = 0; rep < times; ++rep)
+            {
+                cudaMemcpy(dst.col(j) + rep * src.nrow(), src.col(j), src.nrow() * sizeof(T), cudaMemcpyDeviceToDevice);
+            }
+        }
+        
+    }
+    else if (dim == 1)
+    {
+        dst.resize(src.nrow(), src.ncol() * times);
+        for (int rep = 0; rep < times; ++rep)
+        {
+            cudaMemcpy(dst.data() + rep * src.size(), src.data(), src.size() * sizeof(T), cudaMemcpyDeviceToDevice);
+        }
+    }
+    else
+    {
+        std::cerr << "repmat(): invalid dim: " << dim << std::endl;
+        exit(1);
+    }
+    
+    return dst;
+}
+
+template<typename T>
+void transpose(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    assert(dst.nrow() == src.ncol() && dst.ncol() == src.nrow());
+    transpose_wrapper(src.data(), dst.data(), src.nrow(), src.ncol());
+}
+
+template<typename T>
+DeviceMat<T> transpose(DeviceMat<T> const & src)
+{
+    DeviceMat<T> dst(src.ncol(), src.nrow());
+    transpose(src, dst);
+    return dst;
+}
+
+template<typename OP, typename T>
+void colreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    assert(dst.nrow() == 1 && dst.ncol() == src.ncol());
+    
+    // TODO run all column reductions in one kernel?
+    for (int j = 0; j < src.ncol(); ++j)
+    {
+        reduce_wrapper<OP>(src.col(j), dst.col(j), src.nrow());
+    }
+}
+
+template<typename OP, typename T>
+DeviceMat<T> colreduce(DeviceMat<T> const & src)
+{
+    DeviceMat<T> dst(1, src.ncol());
+    colreduce<OP>(src, dst);
+    return dst;
+}
+
+template<typename OP, typename T>
+void rowreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    assert(dst.ncol() == 1 && dst.nrow() == src.nrow());
+    
+    // TODO proper row reduction without transpose
+    DeviceMat<T> src_temp = transpose(src);
+    DeviceMat<T> dst_temp(1, src_temp.ncol());
+    colreduce<OP>(src_temp, dst_temp);
+    dst = transpose(dst_temp);
+}
+
+template<typename OP, typename T>
+DeviceMat<T> rowreduce(DeviceMat<T> const & src)
+{
+    DeviceMat<T> dst(src.nrow(), 1);
+    rowreduce<OP>(src, dst);
+    return dst;
+}
+
+template<typename T>
+void colsum(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    colreduce<bin_ops::add>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> colsum(DeviceMat<T> const & src)
+{
+    return colreduce<bin_ops::add>(src);
+}
+
+template<typename T>
+void colmax(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    colreduce<bin_ops::greater_of>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> colmax(DeviceMat<T> const & src)
+{
+    return colreduce<bin_ops::greater_of>(src);
+}
+
+template<typename T>
+void rowsum(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    rowreduce<bin_ops::add>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> rowsum(DeviceMat<T> const & src)
+{
+    return rowreduce<bin_ops::add>(src);
+}
+
+template<typename T>
+void rowmax(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    rowreduce<bin_ops::greater_of>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> rowmax(DeviceMat<T> const & src)
+{
+    return rowreduce<bin_ops::greater_of>(src);
+}
+
+template<typename T>
+void coldiv(DeviceMat<T> & mat, DeviceMat<T> const & divs)
+{
+    assert(divs.nrow() == 1 && divs.ncol() == mat.ncol());
+    coldiv_wrapper(mat.data(), divs.data(), mat.nrow(), mat.ncol());
+}
+
+template<typename T>
+void normalize(DeviceMat<T> & mat)
+{
+    // 1-norms of each column (assuming non-negative elements)
+    DeviceMat<T> norms(1, mat.ncol());
+    
+    colsum(mat, norms);
+    coldiv(mat, norms);
+}
+
+template<typename OP, typename T>
+void apply(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    assert(dst.nrow() == src.nrow() && dst.ncol() == src.ncol());
+    apply_wrapper<OP>(src.data(), dst.data(), src.size());
+}
+
+template<typename OP, typename T>
+DeviceMat<T> apply(DeviceMat<T> const & src)
+{
+    DeviceMat<T> dst(src.nrow(), src.ncol());
+    apply<OP>(src, dst);
+    return dst;
+}
+
+template<typename OP, typename T>
+void combine(DeviceMat<T> const & src1, DeviceMat<T> const & src2, DeviceMat<T> & dst)
+{
+    assert(dst.nrow() == src1.nrow() && dst.ncol() == src1.ncol() && src2.nrow() == src1.nrow() && src2.ncol() == src1.ncol());
+    combine_wrapper<OP>(src1.data(), src2.data(), dst.data(), src1.size());
+}
+
+template<typename OP, typename T>
+DeviceMat<T> combine(DeviceMat<T> const & src1, DeviceMat<T> const & src2)
+{
+    DeviceMat<T> dst(src1.nrow(), src1.ncol());
+    combine<OP>(src1, src2, dst);
+    return dst;
+}
+
+template<typename T>
+void exp(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    apply<un_ops::exponent>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> exp(DeviceMat<T> const & src)
+{
+    return apply<un_ops::exponent>(src);
+}
+
+template<typename T>
+void sigmoid(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    apply<un_ops::sigmoid>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> sigmoid(DeviceMat<T> const & src)
+{
+    return apply<un_ops::sigmoid>(src);
+}
+
+template<typename T>
+void sigmoid_derivative(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    apply<un_ops::x_times_1_minus_x>(src, dst);
+}
+
+template<typename T>
+DeviceMat<T> sigmoid_derivative(DeviceMat<T> const & src)
+{
+    return apply<un_ops::x_times_1_minus_x>(src);
+}
+
+template<typename T>
+void softmax(DeviceMat<T> const & src, DeviceMat<T> & dst)
+{
+    exp(src, dst);
+    normalize(dst);
+}
+
+template<typename T>
+DeviceMat<T> softmax(DeviceMat<T> const & src)
+{
+    DeviceMat<T> dst(src.nrow(), src.ncol());
+    softmax(src, dst);
+    return dst;
+}
+
+template<typename T>
+void gemm(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> & C)
+{
+    assert(C.nrow() == A.nrow() && C.ncol() == B.ncol());
+    simple_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+}
+
+template<typename T>
+DeviceMat<T> matmult(DeviceMat<T> const & A, DeviceMat<T> const & B)
+{
+    DeviceMat<T> C(A.nrow(), B.ncol());
+    gemm(T(1), A, B, T(0), C);
+    return C;
+}
+
+template<typename T>
+DeviceMat<T> sum(DeviceMat<T> const & src, int dim)
+{
+    if (dim == 0)
+    {
+        return colsum(src);
+    }
+    else if (dim == 1)
+    {
+        return rowsum(src);
+    }
+    else
+    {
+        std::cerr << "repmat(): invalid dim: " << dim << std::endl;
+        exit(1);
+    }
+}
+
+template<typename T>
+void hadamard(DeviceMat<T> const & A, DeviceMat<T> const & B, DeviceMat<T> & C)
+{
+    combine<bin_ops::mult>(A, B, C);
+}
+
+template<typename T>
+DeviceMat<T> hadamard(DeviceMat<T> const & A, DeviceMat<T> const & B)
+{
+    return combine<bin_ops::mult>(A, B);
+}
+
+template<typename T>
+void axpby(T a, DeviceMat<T> const & X, T b, DeviceMat<T> const & Y, DeviceMat<T> & Z)
+{
+    assert(Z.nrow() == X.nrow() && Z.ncol() == X.ncol() && X.nrow() == Y.nrow() && X.ncol() == Y.ncol()); 
+    axpby_wrapper(a, X.data(), b, Y.data(), Z.data(), X.size());
+}
+
+template<typename T>
+DeviceMat<T> axpby(T a, DeviceMat<T> const & X, T b, DeviceMat<T> const & Y)
+{
+    DeviceMat<T> Z(X.nrow(), X.ncol());
+    axpby(a, X, b, Y, Z);
+    return Z;
+}
+
+/**
+ * NN-specific stuff - helper structs and methods
+ */
+
 using DMat = DeviceMat<double>;
 
 struct device_nn
@@ -377,6 +822,10 @@ void to_host(device_grads const & dgrads, grads & hgrads)
         hgrads.db[i] = to_host(dgrads.db[i]);
     }
 }
+
+/**
+ * Actual implementation of NN training
+ */ 
 
 void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cache)
 {

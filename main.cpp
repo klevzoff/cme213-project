@@ -38,7 +38,6 @@ int main(int argc, char* argv[]) {
     MPI_SAFE_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
 
     // Assign a GPU device to each MPI proc
-    /*
     int nDevices;
     cudaGetDeviceCount(&nDevices);
 
@@ -53,7 +52,6 @@ int main(int argc, char* argv[]) {
         std::cout << "Number of MPI processes = " << num_procs << std::endl;
         std::cout << "Number of CUDA devices = " << nDevices << std::endl;
     }
-    */
 
     // Read in command line arguments
     std::vector<int> H(3);
