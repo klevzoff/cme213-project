@@ -490,12 +490,7 @@ template<typename OP, typename T>
 void colreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
 {
     assert(dst.nrow() == 1 && dst.ncol() == src.ncol());
-    
-    // TODO run all column reductions in one kernel?
-    for (int j = 0; j < src.ncol(); ++j)
-    {
-        reduce_wrapper<OP>(src.col(j), dst.col(j), src.nrow());
-    }
+    reduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
 }
 
 template<typename OP, typename T>
