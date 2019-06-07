@@ -3,7 +3,7 @@
 DIR="$(dirname "$0")"
 
 $DIR/grade.sh 4
-$DIR/default.sh
+$DIR/grade.sh
 $DIR/grade.sh 1
 $DIR/grade.sh 2
 $DIR/grade.sh 3
