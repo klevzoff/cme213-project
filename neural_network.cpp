@@ -672,7 +672,8 @@ void gemm(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, Devic
 {
     assert(C.nrow() == A.nrow() && C.ncol() == B.ncol());
     //simple_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-    shared_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //shared_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared2_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
 }
 
 template<typename T>
@@ -680,7 +681,8 @@ void gemmpv(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, Dev
 {
     assert(C.nrow() == A.nrow() && C.ncol() == B.ncol() && d.nrow() == A.nrow());
     //simple_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-    shared_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //shared_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared2_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
 }
 
 template<typename T>

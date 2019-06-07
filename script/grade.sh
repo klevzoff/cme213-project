@@ -5,6 +5,7 @@ MPIRUN="mpirun -np 4"
 
 if [ -z "$1" ]; then
     CMD="$MPIRUN $EXE"
+    $1="DEFAULT"
 else
     case $1 in
         1) N=100 R=0.0001 L=0.001 E=40 B=800 ;;
@@ -21,6 +22,7 @@ else
 fi
 
 echo
+echo "GRADE MODE: $1"
 echo "$CMD"
 echo "===================================================================="
 $CMD

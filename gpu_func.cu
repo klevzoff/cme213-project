@@ -314,6 +314,185 @@ void shared_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
     check_launch("shared_gemmpv");
 }
 
+template<int Mtile, int Ktile, typename T>
+__global__ void shared2_gemm_kernel(T const * __restrict__ A,
+                                    T const * __restrict__ B,
+                                    T * __restrict__ C,
+                                    T const alpha,
+                                    T const beta,
+                                    int M, int N, int K)
+{
+    int const Ntile = Mtile / Ktile;
+    
+    T __shared__ sB[Ntile][Ktile];
+    T lA[Ktile];
+    
+    int const num_tiles = (K + Ktile - 1) / Ktile;
+    
+    int const row = Mtile * blockIdx.y + Ntile * threadIdx.y + threadIdx.x;
+    int const col_offset = Ntile * blockIdx.x;
+    
+    for (int lc = 0; lc < Ntile; ++lc)
+    {
+        if (row < M && (col_offset + lc) < N)
+        {
+            C[(col_offset + lc) * M + row] *= beta;
+        }
+    }
+    
+    for (int tile = 0; tile < num_tiles; ++tile)
+    {
+        int const tile_offset = tile * Ktile;
+        
+        if ((col_offset + threadIdx.x) < N && (tile_offset + threadIdx.y) < K)
+        {
+            sB[threadIdx.x][threadIdx.y] = B[(col_offset + threadIdx.x) * K + tile_offset + threadIdx.y];
+        }
+        else
+        {
+            sB[threadIdx.x][threadIdx.y] = T(0);
+        }
+        
+        __syncthreads(); 
+
+        if (row < M)
+        {
+            #pragma unroll
+            for (int k = 0; k < Ktile; ++k)
+            {
+                if (tile_offset + k < K)
+                {
+                    lA[k] = A[(tile_offset + k) * M + row];
+                }
+                else
+                {
+                    lA[k] = T(0);
+                }
+            }
+
+            for (int lc = 0; lc < Ntile; ++lc)
+            {
+                if (col_offset + lc < N)
+                {
+                    for (int k = 0; k < Ktile; ++k)
+                    {
+                        C[(col_offset + lc) * M + row] += alpha * lA[k] * sB[lc][k];
+                    }
+                }
+            }
+        }
+        
+        __syncthreads();   
+    }
+}
+
+template<typename T>
+void shared2_gemm_wrapper(T const * A, T const * B, T * C,
+                          T const alpha, T const beta,
+                          int M, int N, int K) 
+{
+    int const Mtile = 64;
+    int const Ktile = 4;
+    int const Ntile = Mtile / Ktile;
+    
+    dim3 const threads(Ntile, Ktile);
+    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+    
+    shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    
+    check_launch("shared2_gemm");
+}
+
+template<int Mtile, int Ktile, typename T>
+__global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
+                                      T const * __restrict__ B,
+                                      T const * __restrict__ d,
+                                      T * __restrict__ C,
+                                      T const alpha,
+                                      T const beta,
+                                      int M, int N, int K)
+{
+    int const Ntile = Mtile / Ktile;
+    
+    T __shared__ sB[Ntile][Ktile];
+    T lA[Ktile];
+    
+    int const num_tiles = (K + Ktile - 1) / Ktile;
+    
+    int const row = Mtile * blockIdx.y + Ntile * threadIdx.y + threadIdx.x;
+    int const col_offset = Ntile * blockIdx.x;
+    
+    for (int lc = 0; lc < Ntile; ++lc)
+    {
+        if (row < M && (col_offset + lc) < N)
+        {
+            C[(col_offset + lc) * M + row] = beta * d[row];
+        }
+    }
+    
+    for (int tile = 0; tile < num_tiles; ++tile)
+    {
+        int const tile_offset = tile * Ktile;
+        
+        if ((col_offset + threadIdx.x) < N && (tile_offset + threadIdx.y) < K)
+        {
+            sB[threadIdx.x][threadIdx.y] = B[(col_offset + threadIdx.x) * K + tile_offset + threadIdx.y];
+        }
+        else
+        {
+            sB[threadIdx.x][threadIdx.y] = T(0);
+        }
+        
+        __syncthreads(); 
+
+        if (row < M)
+        {
+            #pragma unroll
+            for (int k = 0; k < Ktile; ++k)
+            {
+                if (tile_offset + k < K)
+                {
+                    lA[k] = A[(tile_offset + k) * M + row];
+                }
+                else
+                {
+                    lA[k] = T(0);
+                }
+            }
+
+            for (int lc = 0; lc < Ntile; ++lc)
+            {
+                if (col_offset + lc < N)
+                {
+                    for (int k = 0; k < Ktile; ++k)
+                    {
+                        C[(col_offset + lc) * M + row] += alpha * lA[k] * sB[lc][k];
+                    }
+                }
+            }
+        }
+        
+        __syncthreads();   
+    }
+}
+
+template<typename T>
+void shared2_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
+                            T const alpha, T const beta,
+                            int M, int N, int K) 
+{
+    int const Mtile = 64;
+    int const Ktile = 4;
+    int const Ntile = Mtile / Ktile;
+    
+    dim3 const threads(Ntile, Ktile);
+    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+    
+    shared2_gemmpv_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    
+    check_launch("shared2_gemmpv");
+}
+
 /*
 Routine to perform an in-place GEMM operation, i.e., C := alpha*A*B + beta*C
 */
@@ -323,7 +502,8 @@ int myGEMM(double* __restrict__ A, double* __restrict__ B,
 {
     /* TODO: Write an efficient GEMM implementation on GPU */
     //simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
-    shared_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
+    //shared_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
+    shared2_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
 
     return 0;
 }
@@ -631,6 +811,8 @@ template void simple_gemm_wrapper<T>(T const * A, T const * B, T * C, T const al
 template void simple_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void shared_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void shared_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared2_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared2_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
 template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \
