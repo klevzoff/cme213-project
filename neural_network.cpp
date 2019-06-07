@@ -671,7 +671,16 @@ template<typename T>
 void gemm(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> & C)
 {
     assert(C.nrow() == A.nrow() && C.ncol() == B.ncol());
-    simple_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //simple_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+}
+
+template<typename T>
+void gemmpv(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> const & d, DeviceMat<T> & C)
+{
+    assert(C.nrow() == A.nrow() && C.ncol() == B.ncol() && d.nrow() == A.nrow());
+    //simple_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
 }
 
 template<typename T>
@@ -831,14 +840,21 @@ void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cac
     cache.X = X;
     int N = X.ncol();
 
-    cache.z[0] = repmat(nn.b[0], 1, N);
-    gemm(1.0, nn.W[0], X, 1.0, cache.z[0]);
+    //cache.z[0] = repmat(nn.b[0], 1, N);
+    //gemm(1.0, nn.W[0], X, 1.0, cache.z[0]);
+    
+    cache.z[0].resize(nn.W[0].nrow(), N);
+    gemmpv(1.0, nn.W[0], X, 1.0, nn.b[0], cache.z[0]);
    
     cache.a[0] = sigmoid(cache.z[0]);
 
     assert(cache.a[0].nrow() == nn.W[1].ncol());
-    cache.z[1] = repmat(nn.b[1], 1, N);
-    gemm(1.0, nn.W[1], cache.a[0], 1.0, cache.z[1]);
+    
+    //cache.z[1] = repmat(nn.b[1], 1, N);
+    //gemm(1.0, nn.W[1], cache.a[0], 1.0, cache.z[1]);
+    
+    cache.z[1].resize(nn.W[1].nrow(), N);
+    gemmpv(1.0, nn.W[1], cache.a[0], 1.0, nn.b[1], cache.z[1]);
 
     cache.a[1] = softmax(cache.z[1]);
     cache.yc = cache.a[1];

@@ -72,6 +72,15 @@ template<typename T>
 void simple_gemm_wrapper(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K);
 
 template<typename T>
+void simple_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K);
+
+template<typename T>
+void shared_gemm_wrapper(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K);
+    
+template<typename T>
+void shared_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K);
+
+template<typename T>
 void transpose_wrapper(T const * src, T * dst, int M, int N);
 
 template<typename OP, typename T>
@@ -95,6 +104,9 @@ void axpby_wrapper(T a, T const * X, T b, T const * Y, T * Z, int N);
 
 #define DECL_INST_WRAPPER_TEMPLATES(T) \
 extern template void simple_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+extern template void simple_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+extern template void shared_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+extern template void shared_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 extern template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
 extern template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 extern template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \

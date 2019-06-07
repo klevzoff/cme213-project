@@ -71,6 +71,249 @@ void simple_gemm_wrapper(T const * A, T const * B, T * C,
     check_launch("simple_gemm");
 }
 
+// gemmpv = general matrix-matrix plus vector
+// i.e. C = alpha * A * B + beta * repmat(d, 1, N)
+template<typename T>
+__global__ void simple_gemmpv_kernel(T const * __restrict__ A,
+                                     T const * __restrict__ B,
+                                     T const * __restrict__ d,
+                                     T * __restrict__ C,
+                                     T const alpha,
+                                     T const beta,
+                                     int M, int N, int K)
+{
+    int const offset = blockDim.x * blockIdx.x + threadIdx.x;
+    
+    int const row = offset % M;
+    int const col = offset / M;
+    
+    if (col < N)
+    {
+        T res = beta * d[row];
+        for (int k = 0; k < K; ++k)
+        {
+            res += alpha * A[k * M + row] * B[col * K + k];
+        }
+        C[col * M + row] = res;
+    }
+}
+
+template<typename T>
+void simple_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
+                           T const alpha, T const beta,
+                           int M, int N, int K) 
+{
+    int const threads = 192;
+    int const blocks = (M * N + threads - 1) / threads;
+    
+    simple_gemmpv_kernel<<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    
+    check_launch("simple_gemmpv");
+}
+
+template<int warp_size, int num_warps, typename T>
+__global__ void shared_gemm_kernel(T const * __restrict__ A,
+                                   T const * __restrict__ B,
+                                   T * __restrict__ C,
+                                   T const alpha,
+                                   T const beta,
+                                   int M, int N, int K)
+{
+    T __shared__ sA[warp_size][warp_size];
+    T __shared__ sB[warp_size][warp_size];
+    
+    int const num_passes = warp_size / num_warps;
+    T lC[num_passes];
+    
+    int const local_row = threadIdx.x;
+    int const row = warp_size * blockIdx.x + local_row;
+    
+    // get enough tiles to cover the width of A / height of B
+    int const num_tiles = (K + warp_size - 1) / warp_size; 
+    
+    // store previous C values updated by this thread
+    for (int pass = 0; pass < num_passes; ++pass)
+    {
+        int const local_col = pass * num_warps + threadIdx.y;
+        int const col = warp_size * blockIdx.y + local_col;
+        if (row < M && col < N)
+        {
+            lC[pass] = beta * C[col * M + row];
+        }
+    }
+    
+    for (int tile = 0; tile < num_tiles; ++tile)
+    {
+        int const tile_offset = tile * warp_size;
+        int const num_k = min(warp_size, K - tile_offset);
+        
+        for (int pass = 0; pass < num_passes; ++pass)
+        {
+            int const local_col = pass * num_warps + threadIdx.y;
+            int const col = warp_size * blockIdx.y + local_col;
+
+            int const inner_row = tile_offset + local_row;
+            int const inner_col = tile_offset + local_col;
+            
+            if (row < M && inner_col < K)
+            {
+                sA[local_col][local_row] = A[inner_col * M + row];
+            }
+            if (col < N && inner_row < K)
+            {
+                sB[local_row][local_col] = B[col * K + inner_row];
+            }
+        }
+
+        __syncthreads();
+
+        for (int pass = 0; pass < num_passes; ++pass)
+        {
+            int const local_col = pass * num_warps + threadIdx.y;
+            int const col = warp_size * blockIdx.y + local_col;
+
+            if (row < M && col < N)
+            {               
+                for (int k = 0; k < num_k; ++k)
+                {
+                    lC[pass] += alpha * sA[k][local_row] * sB[k][local_col];
+                }
+            }       
+        }
+        
+        __syncthreads();
+    }
+    
+    // write C values updated by this thread
+    for (int pass = 0; pass < num_passes; ++pass)
+    {
+        int const local_col = pass * num_warps + threadIdx.y;
+        int const col = warp_size * blockIdx.y + local_col;
+        if (row < M && col < N)
+        {
+            C[col * M + row] = lC[pass];
+        }
+    }
+}
+
+template<typename T>
+void shared_gemm_wrapper(T const * A, T const * B, T * C,
+                         T const alpha, T const beta,
+                         int M, int N, int K) 
+{
+    int const warp_size = 32;
+    int const num_warps = 1024 / warp_size;
+    
+    dim3 const threads(warp_size, num_warps);
+    dim3 const blocks((M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y);
+    
+    shared_gemm_kernel<warp_size, num_warps><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    
+    check_launch("shared_gemm");
+}
+
+template<int warp_size, int num_warps, typename T>
+__global__ void shared_gemmpv_kernel(T const * __restrict__ A,
+                                     T const * __restrict__ B,
+                                     T const * __restrict__ d,
+                                     T * __restrict__ C,
+                                     T const alpha,
+                                     T const beta,
+                                     int M, int N, int K)
+{
+    T __shared__ sA[warp_size][warp_size];
+    T __shared__ sB[warp_size][warp_size];
+    
+    int const num_passes = warp_size / num_warps;
+    T lC[num_passes];
+    
+    int const local_row = threadIdx.x;
+    int const row = warp_size * blockIdx.x + local_row;
+    
+    // get enough tiles to cover the width of A / height of B
+    int const num_tiles = (K + warp_size - 1) / warp_size; 
+    
+    // store previous C values updated by this thread
+    for (int pass = 0; pass < num_passes; ++pass)
+    {
+        int const local_col = pass * num_warps + threadIdx.y;
+        int const col = warp_size * blockIdx.y + local_col;
+        if (row < M && col < N)
+        {
+            lC[pass] = beta * d[row];
+        }
+    }
+    
+    for (int tile = 0; tile < num_tiles; ++tile)
+    {
+        int const tile_offset = tile * warp_size;
+        int const num_k = min(warp_size, K - tile_offset);
+        
+        for (int pass = 0; pass < num_passes; ++pass)
+        {
+            int const local_col = pass * num_warps + threadIdx.y;
+            int const col = warp_size * blockIdx.y + local_col;
+
+            int const inner_row = tile_offset + local_row;
+            int const inner_col = tile_offset + local_col;
+            
+            if (row < M && inner_col < K)
+            {
+                sA[local_col][local_row] = A[inner_col * M + row];
+            }
+            if (col < N && inner_row < K)
+            {
+                sB[local_row][local_col] = B[col * K + inner_row];
+            }
+        }
+
+        __syncthreads();
+
+        for (int pass = 0; pass < num_passes; ++pass)
+        {
+            int const local_col = pass * num_warps + threadIdx.y;
+            int const col = warp_size * blockIdx.y + local_col;
+
+            if (row < M && col < N)
+            {               
+                for (int k = 0; k < num_k; ++k)
+                {
+                    lC[pass] += alpha * sA[k][local_row] * sB[k][local_col];
+                }
+            }       
+        }
+        
+        __syncthreads();
+    }
+    
+    // write C values updated by this thread
+    for (int pass = 0; pass < num_passes; ++pass)
+    {
+        int const local_col = pass * num_warps + threadIdx.y;
+        int const col = warp_size * blockIdx.y + local_col;
+        if (row < M && col < N)
+        {
+            C[col * M + row] = lC[pass];
+        }
+    }
+}
+
+template<typename T>
+void shared_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
+                           T const alpha, T const beta,
+                           int M, int N, int K) 
+{
+    int const warp_size = 32;
+    int const num_warps = 1024 / warp_size;
+    
+    dim3 const threads(warp_size, num_warps);
+    dim3 const blocks((M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y);
+    
+    shared_gemmpv_kernel<warp_size, num_warps><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    
+    check_launch("shared_gemmpv");
+}
+
 /*
 Routine to perform an in-place GEMM operation, i.e., C := alpha*A*B + beta*C
 */
@@ -79,7 +322,8 @@ int myGEMM(double* __restrict__ A, double* __restrict__ B,
            int M, int N, int K) 
 {
     /* TODO: Write an efficient GEMM implementation on GPU */
-    simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
+    //simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
+    shared_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
 
     return 0;
 }
@@ -213,7 +457,7 @@ template<typename T>
 void transpose_wrapper(T const * src, T * dst, int M, int N)
 {
     int const warp_size = 32;
-    int const num_warps = 256 / 32;
+    int const num_warps = 256 / warp_size;
     
     dim3 const threads(warp_size, num_warps);
     dim3 const blocks((M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y);
@@ -384,6 +628,9 @@ void axpby_wrapper(T a, T const * X, T b, T const * Y, T * Z, int N)
 
 #define INST_WRAPPER_TEMPLATES(T) \
 template void simple_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void simple_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
 template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \
