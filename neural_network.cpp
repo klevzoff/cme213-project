@@ -827,6 +827,14 @@ void to_host(device_grads const & dgrads, grads & hgrads)
     }
 }
 
+void allreduce(DMat & A)
+{
+    arma::mat hA = to_host(A);
+    MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, hA.memptr(), hA.n_rows * hA.n_cols, 
+                                MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
+    A = to_device(hA);
+}
+
 /**
  * Actual implementation of NN training
  */ 
@@ -899,6 +907,37 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
     error_file.open("Outputs/CpuGpuDiff.txt");
     int print_flag = 0;
     
+    int const num_batches = (N + batch_size - 1) / batch_size;
+    
+    std::vector<DMat> X_batch(num_batches);
+    std::vector<DMat> y_batch(num_batches);
+    
+    // distribute the input
+    for (int batch = 0; batch < num_batches; ++batch)
+    {         
+        int const first_col = batch * batch_size;
+        int const last_col = std::min((batch + 1)*batch_size-1, N-1);
+        int const num_col = last_col - first_col + 1;
+        int const num_col_rank = num_col / num_procs; // assume equal for now
+
+        arma::mat X_batch_host(nn.H[0], num_col_rank);
+        arma::mat y_batch_host(nn.H[nn.num_layers], num_col_rank);
+
+        double const * const X_sendbuf = (rank == 0) ? X.colptr(first_col) : nullptr;
+        double const * const y_sendbuf = (rank == 0) ? y.colptr(first_col) : nullptr;
+
+        MPI_SAFE_CALL(MPI_Scatter(X_sendbuf, num_col_rank * nn.H[0], MPI_DOUBLE, 
+                                  X_batch_host.memptr(), num_col_rank * nn.H[0], MPI_DOUBLE, 
+                                  0, MPI_COMM_WORLD));
+
+        MPI_SAFE_CALL(MPI_Scatter(y_sendbuf, num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
+                                  y_batch_host.memptr(), num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
+                                  0, MPI_COMM_WORLD));
+
+        X_batch[batch] = to_device(X_batch_host);
+        y_batch[batch] = to_device(y_batch_host);
+    }
+    
     // copy the whole network onto device
     device_nn dnn;
     to_device(nn, dnn);
@@ -907,31 +946,10 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
 
     for (int epoch = 0; epoch < epochs; ++epoch)
     {
-        int num_batches = (N + batch_size - 1) / batch_size;
-
         for (int batch = 0; batch < num_batches; ++batch)
-        {         
-            int const first_col = batch * batch_size;
-            int const last_col = std::min((batch + 1)*batch_size-1, N-1);
-            int const num_col = last_col - first_col + 1;
-            int const num_col_rank = num_col / num_procs; // assume equal for now
-            
-            arma::mat X_batch(nn.H[0], num_col_rank);
-            arma::mat y_batch(nn.H[nn.num_layers], num_col_rank);
-            
-            double const * const X_sendbuf = (rank == 0) ? X.colptr(first_col) : nullptr;
-            double const * const y_sendbuf = (rank == 0) ? y.colptr(first_col) : nullptr;
-                            
-            MPI_SAFE_CALL(MPI_Scatter(X_sendbuf, num_col_rank * nn.H[0], MPI_DOUBLE, 
-                                      X_batch.memptr(), num_col_rank * nn.H[0], MPI_DOUBLE, 
-                                      0, MPI_COMM_WORLD));
-            
-            MPI_SAFE_CALL(MPI_Scatter(y_sendbuf, num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
-                                      y_batch.memptr(), num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
-                                      0, MPI_COMM_WORLD));
-            
-            DMat dX_batch = to_device(X_batch);
-            DMat dy_batch = to_device(y_batch);
+        {                  
+            DMat const & dX_batch = X_batch[batch];
+            DMat const & dy_batch = y_batch[batch];
 
             device_cache bpcache;
             device_feedforward(dnn, dX_batch, bpcache);
@@ -946,7 +964,7 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
                 if (grad_check)
                 {
                     grads numgrads;
-                    numgrad(nn, X_batch, y_batch, reg, numgrads);
+                    numgrad(nn, to_host(dX_batch), to_host(dy_batch), reg, numgrads);
                     
                     grads host_bpgrads;
                     to_host(bpgrads, host_bpgrads);
@@ -954,28 +972,17 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
                     assert(gradcheck(numgrads, host_bpgrads));
                 }
 
-                arma::mat yc = to_host(bpcache.yc);
                 std::cout << "Loss at iteration " << iter << " of epoch " << epoch << "/" <<
-                          epochs << " = " << loss(nn, yc, y_batch, reg) << "\n";
+                          epochs << " = " << loss(nn, to_host(bpcache.yc), to_host(dy_batch), reg) << "\n";
             }
             
             // Gradient descent step
             for (int i = 0; i < dnn.num_layers; ++i)
             {
-                arma::mat dW = to_host(bpgrads.dW[i]);
-                MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, dW.memptr(), dW.n_rows * dW.n_cols, 
-                                            MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
-                dW /= num_procs;
-                bpgrads.dW[i] = to_device(dW);
-
-                arma::mat db = to_host(bpgrads.db[i]);
-                MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, db.memptr(), db.n_rows * db.n_cols, 
-                                            MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
-                db /= num_procs;
-                bpgrads.db[i] = to_device(db);
-                              
-                axpby(1.0, dnn.W[i], -learning_rate, bpgrads.dW[i], dnn.W[i]);
-                axpby(1.0, dnn.b[i], -learning_rate, bpgrads.db[i], dnn.b[i]);
+                allreduce(bpgrads.dW[i]);
+                allreduce(bpgrads.db[i]);
+                axpby(1.0, dnn.W[i], -learning_rate / num_procs, bpgrads.dW[i], dnn.W[i]);
+                axpby(1.0, dnn.b[i], -learning_rate / num_procs, bpgrads.db[i], dnn.b[i]);
             }
 
             if (print_every <= 0)
