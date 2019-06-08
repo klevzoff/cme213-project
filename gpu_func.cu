@@ -421,7 +421,7 @@ void shared2_gemm_wrapper(T const * __restrict__ A,
     }
     else
     {
-        int const Mtile = 128;
+        int const Mtile = 256;
         int const Ktile = 8;
         int const Ntile = Mtile / Ktile;
 
