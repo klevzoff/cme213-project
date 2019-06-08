@@ -572,8 +572,8 @@ void shared3_gemmpv_wrapper(T const * __restrict__ A,
                             T const alpha, T const beta,
                             int M, int N, int K)
 {
-    using BlockDims = triplet<int, 32, 32, 16>;
-    using WarpDims  = triplet<int, 8, 4, 1>;
+    typedef triplet<int, 32, 32, 16> BlockDims;
+    typedef triplet<int, 8, 4, 1>    WarpDims;
 }
 
 /* ================================= myGEMM ================================ */
