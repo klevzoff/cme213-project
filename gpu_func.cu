@@ -365,8 +365,6 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
         {
             sB[threadIdx.y][threadIdx.x] = T(0);
         }
-        
-        __syncthreads(); 
 
         if (row < M)
         {
@@ -382,7 +380,12 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
                     lA[k] = T(0);
                 }
             }
+        }
+        
+        __syncthreads(); 
 
+        if (row < M)
+        {
             for (int lc = 0; lc < Ntile; ++lc)
             {
                 if (col_offset + lc < N)
