@@ -419,7 +419,7 @@ void shared2_gemm_wrapper(T const * __restrict__ A,
                           T const alpha, T const beta,
                           int M, int N, int K) 
 {  
-    //if (N <= 16)
+    if (N <= 16)
     {
         int const Mtile = 64;
         int const Ktile = 4;
@@ -430,17 +430,17 @@ void shared2_gemm_wrapper(T const * __restrict__ A,
 
         shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
     }
-    //else
-    //{
-    //    int const Mtile = 128;
-    //    int const Ktile = 8;
-    //    int const Ntile = Mtile / Ktile;
+    else
+    {
+        int const Mtile = 128;
+        int const Ktile = 8;
+        int const Ntile = Mtile / Ktile;
 
-    //    dim3 const threads(Ktile, Ntile);
-    //    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+        dim3 const threads(Ktile, Ntile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-    //    shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
-    //}
+        shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    }
     
     check_launch("shared2_gemm");
 }
@@ -458,17 +458,21 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
     
     T __shared__ sB[Ntile][Ktile];
     T lA[Ktile];
+    T lC[Ntile];
     
     int const num_tiles = (K + Ktile - 1) / Ktile;
     
     int const row = Mtile * blockIdx.y + Ktile * threadIdx.y + threadIdx.x;
     int const col_offset = Ntile * blockIdx.x;
     
-    for (int lc = 0; lc < Ntile; ++lc)
+    if (row < M)
     {
-        if (row < M && (col_offset + lc) < N)
+        for (int lc = 0; lc < Ntile; ++lc)
         {
-            C[(col_offset + lc) * M + row] = beta * d[row];
+            if (col_offset + lc < N)
+            {
+                lC[lc] = beta * d[row];
+            }
         }
     }
     
@@ -506,17 +510,27 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
             {
                 if (col_offset + lc < N)
                 {
-                    T accum(0);
+                    #pragma unroll
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        accum += alpha * lA[k] * sB[lc][k];
+                        lC[lc] += alpha * lA[k] * sB[lc][k];
                     }
-                    C[(col_offset + lc) * M + row] += accum;
                 }
             }
         }
         
         __syncthreads();   
+    }
+    
+    if (row < M)
+    {
+        for (int lc = 0; lc < Ntile; ++lc)
+        {
+            if (col_offset + lc < N)
+            {
+                C[(col_offset + lc) * M + row] = lC[lc];
+            }
+        }
     }
 }
 
