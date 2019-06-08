@@ -336,19 +336,20 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
     
     T __shared__ sB[Ntile][Ktile];
     T lA[Ktile];
+    T lC[Ntile];
     
     int const num_tiles = (K + Ktile - 1) / Ktile;
     
     int const row = Mtile * blockIdx.y + Ktile * threadIdx.y + threadIdx.x;
     int const col_offset = Ntile * blockIdx.x;
     
-    if (beta != 1.0)
+    if (row < M)
     {
         for (int lc = 0; lc < Ntile; ++lc)
         {
-            if (row < M && (col_offset + lc) < N)
+            if (col_offset + lc < N)
             {
-                C[(col_offset + lc) * M + row] *= beta;
+                lC[lc] = beta * C[(col_offset + lc) * M + row];
             }
         }
     }
@@ -387,17 +388,27 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
             {
                 if (col_offset + lc < N)
                 {
-                    T accum(0);
+                    #pragma unroll
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        accum += alpha * lA[k] * sB[lc][k];
+                        lC[lc] += alpha * lA[k] * sB[lc][k];
                     }
-                    C[(col_offset + lc) * M + row] += accum;
                 }
             }
         }
         
         __syncthreads();   
+    }
+    
+    if (row < M)
+    {
+        for (int lc = 0; lc < Ntile; ++lc)
+        {
+            if (col_offset + lc < N)
+            {
+                C[(col_offset + lc) * M + row] = lC[lc];
+            }
+        }
     }
 }
 
