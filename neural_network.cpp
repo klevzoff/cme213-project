@@ -849,22 +849,15 @@ void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cac
     assert(X.nrow() == nn.W[0].ncol());
     cache.X = X;
     int N = X.ncol();
-
-    //cache.z[0] = repmat(nn.b[0], 1, N);
-    //gemm(1.0, nn.W[0], X, 1.0, cache.z[0]);
     
     cache.z[0].resize(nn.W[0].nrow(), N);
-    gemmpv(1.0, nn.W[0], X, 1.0, nn.b[0], cache.z[0]);
+    gemmpv(1.0, nn.W[0], X, 1.0, nn.b[0], cache.z[0]); // M = 100(0), N = 800, K = 784
    
     cache.a[0] = sigmoid(cache.z[0]);
 
     assert(cache.a[0].nrow() == nn.W[1].ncol());
-    
-    //cache.z[1] = repmat(nn.b[1], 1, N);
-    //gemm(1.0, nn.W[1], cache.a[0], 1.0, cache.z[1]);
-    
     cache.z[1].resize(nn.W[1].nrow(), N);
-    gemmpv(1.0, nn.W[1], cache.a[0], 1.0, nn.b[1], cache.z[1]);
+    gemmpv(1.0, nn.W[1], cache.a[0], 1.0, nn.b[1], cache.z[1]); // M = 10, N = 800, K = 100(0)
 
     cache.a[1] = softmax(cache.z[1]);
     cache.yc = cache.a[1];
@@ -879,15 +872,15 @@ void device_backprop(device_nn const & nn, DMat const & y, double reg,
 
     DMat diff = axpby(1.0 / N, bpcache.yc, -1.0 / N, y);
     bpgrads.dW[1] = nn.W[1];
-    gemm(1.0, diff, transpose(bpcache.a[0]), reg, bpgrads.dW[1]);
+    gemm(1.0, diff, transpose(bpcache.a[0]), reg, bpgrads.dW[1]); // M = 10, N = 100(0), K = 800
     bpgrads.db[1] = sum(diff, 1);
     
-    DMat da1 = matmult(transpose(nn.W[1]), diff);
+    DMat da1 = matmult(transpose(nn.W[1]), diff); // M = 100(0), N = 800, K = 10
     DMat dz1 = sigmoid_derivative(bpcache.a[0]);
     hadamard(da1, dz1, dz1);
     
     bpgrads.dW[0] = nn.W[0];
-    gemm(1.0, dz1, transpose(bpcache.X), reg, bpgrads.dW[0]);
+    gemm(1.0, dz1, transpose(bpcache.X), reg, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
     bpgrads.db[0] = sum(dz1, 1);
 }
 

@@ -374,10 +374,12 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
             {
                 if (col_offset + lc < N)
                 {
+                    T accum(0);
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        C[(col_offset + lc) * M + row] += alpha * lA[k] * sB[lc][k];
+                        accum += alpha * lA[k] * sB[lc][k];
                     }
+                    C[(col_offset + lc) * M + row] += accum;
                 }
             }
         }
@@ -390,7 +392,7 @@ template<typename T>
 void shared2_gemm_wrapper(T const * A, T const * B, T * C,
                           T const alpha, T const beta,
                           int M, int N, int K) 
-{
+{  
     int const Mtile = 64;
     int const Ktile = 4;
     int const Ntile = Mtile / Ktile;
@@ -464,10 +466,12 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
             {
                 if (col_offset + lc < N)
                 {
+                    T accum(0);
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        C[(col_offset + lc) * M + row] += alpha * lA[k] * sB[lc][k];
+                        accum += alpha * lA[k] * sB[lc][k];
                     }
+                    C[(col_offset + lc) * M + row] += accum;
                 }
             }
         }
@@ -480,7 +484,7 @@ template<typename T>
 void shared2_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
                             T const alpha, T const beta,
                             int M, int N, int K) 
-{
+{    
     int const Mtile = 64;
     int const Ktile = 4;
     int const Ntile = Mtile / Ktile;
@@ -500,7 +504,6 @@ int myGEMM(double* __restrict__ A, double* __restrict__ B,
            double* __restrict__ C, double* alpha, double* beta,
            int M, int N, int K) 
 {
-    /* TODO: Write an efficient GEMM implementation on GPU */
     //simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
     //shared_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
     shared2_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
