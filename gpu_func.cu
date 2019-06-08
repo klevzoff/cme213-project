@@ -418,29 +418,15 @@ void shared2_gemm_wrapper(T const * __restrict__ A,
                           T * __restrict__ C,
                           T const alpha, T const beta,
                           int M, int N, int K) 
-{  
-    if (N <= 16)
-    {
-        int const Mtile = 64;
-        int const Ktile = 4;
-        int const Ntile = Mtile / Ktile;
+{
+    int const Mtile = 64;
+    int const Ktile = 4;
+    int const Ntile = Mtile / Ktile;
 
-        dim3 const threads(Ktile, Ntile);
-        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+    dim3 const threads(Ktile, Ntile);
+    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-        shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
-    }
-    else
-    {
-        int const Mtile = 128;
-        int const Ktile = 8;
-        int const Ntile = Mtile / Ktile;
-
-        dim3 const threads(Ktile, Ntile);
-        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
-
-        shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
-    }
+    shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
     
     check_launch("shared2_gemm");
 }
@@ -542,28 +528,14 @@ void shared2_gemmpv_wrapper(T const * __restrict__ A,
                             T const alpha, T const beta,
                             int M, int N, int K) 
 {    
-    if (N <= 16)
-    {
-        int const Mtile = 64;
-        int const Ktile = 4;
-        int const Ntile = Mtile / Ktile;
+    int const Mtile = 64;
+    int const Ktile = 4;
+    int const Ntile = Mtile / Ktile;
 
-        dim3 const threads(Ktile, Ntile);
-        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+    dim3 const threads(Ktile, Ntile);
+    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-        shared2_gemmpv_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
-    }
-    else
-    {
-        int const Mtile = 128;
-        int const Ktile = 8;
-        int const Ntile = Mtile / Ktile;
-
-        dim3 const threads(Ktile, Ntile);
-        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
-
-        shared2_gemmpv_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
-    }
+    shared2_gemmpv_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
     
     check_launch("shared2_gemmpv");
 }
