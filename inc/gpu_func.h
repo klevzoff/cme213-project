@@ -43,8 +43,9 @@ inline double stop_timer(event_pair* p) {
 
 int useless_gpu_add_one(int t);
 
-int myGEMM(double* A, double* B, double* C, double* alpha, double* beta, int M,
-           int N, int K);
+int myGEMM(double const * A, double const * B, double * C, 
+           double * alpha, double * beta, 
+           int M, int N, int K);
 
 /**
  * Forward declare operations for explicit template instantiation

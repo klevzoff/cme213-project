@@ -59,7 +59,9 @@ __global__ void simple_gemm_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void simple_gemm_wrapper(T const * A, T const * B, T * C,
+void simple_gemm_wrapper(T const * __restrict__ A,
+                         T const * __restrict__ B,
+                         T * __restrict__ C,
                          T const alpha, T const beta,
                          int M, int N, int K) 
 {
@@ -99,7 +101,10 @@ __global__ void simple_gemmpv_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void simple_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
+void simple_gemmpv_wrapper(T const * __restrict__ A,
+                           T const * __restrict__ B,
+                           T const * __restrict__ d,
+                           T * __restrict__ C,
                            T const alpha, T const beta,
                            int M, int N, int K) 
 {
@@ -197,7 +202,9 @@ __global__ void shared_gemm_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void shared_gemm_wrapper(T const * A, T const * B, T * C,
+void shared_gemm_wrapper(T const * __restrict__ A,
+                         T const * __restrict__ B,
+                         T * __restrict__ C,
                          T const alpha, T const beta,
                          int M, int N, int K) 
 {
@@ -299,7 +306,10 @@ __global__ void shared_gemmpv_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void shared_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
+void shared_gemmpv_wrapper(T const * __restrict__ A,
+                           T const * __restrict__ B,
+                           T const * __restrict__ d,
+                           T * __restrict__ C,
                            T const alpha, T const beta,
                            int M, int N, int K) 
 {
@@ -392,7 +402,9 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void shared2_gemm_wrapper(T const * A, T const * B, T * C,
+void shared2_gemm_wrapper(T const * __restrict__ A,
+                          T const * __restrict__ B,
+                          T * __restrict__ C,
                           T const alpha, T const beta,
                           int M, int N, int K) 
 {  
@@ -498,7 +510,10 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
 }
 
 template<typename T>
-void shared2_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
+void shared2_gemmpv_wrapper(T const * __restrict__ A, 
+                            T const * __restrict__ B, 
+                            T const * __restrict__ d, 
+                            T * __restrict__ C,
                             T const alpha, T const beta,
                             int M, int N, int K) 
 {    
@@ -517,8 +532,10 @@ void shared2_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C,
 /*
 Routine to perform an in-place GEMM operation, i.e., C := alpha*A*B + beta*C
 */
-int myGEMM(double* __restrict__ A, double* __restrict__ B,
-           double* __restrict__ C, double* alpha, double* beta,
+int myGEMM(double const * __restrict__ A, 
+           double const * __restrict__ B,
+           double * __restrict__ C, 
+           double * alpha, double * beta,
            int M, int N, int K) 
 {
     //simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
