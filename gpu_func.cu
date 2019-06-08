@@ -324,7 +324,7 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
 {
     int const Ntile = Mtile / Ktile;
     
-    T __shared__ sB[Ntile][Ktile];
+    T __shared__ sB[Ktile][Ntile];
     T lA[Ktile];
     
     int const num_tiles = (K + Ktile - 1) / Ktile;
@@ -332,11 +332,14 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
     int const row = Mtile * blockIdx.y + Ntile * threadIdx.y + threadIdx.x;
     int const col_offset = Ntile * blockIdx.x;
     
-    for (int lc = 0; lc < Ntile; ++lc)
+    if (beta != 1.0)
     {
-        if (row < M && (col_offset + lc) < N)
+        for (int lc = 0; lc < Ntile; ++lc)
         {
-            C[(col_offset + lc) * M + row] *= beta;
+            if (row < M && (col_offset + lc) < N)
+            {
+                C[(col_offset + lc) * M + row] *= beta;
+            }
         }
     }
     
@@ -346,11 +349,11 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
         
         if ((col_offset + threadIdx.x) < N && (tile_offset + threadIdx.y) < K)
         {
-            sB[threadIdx.x][threadIdx.y] = B[(col_offset + threadIdx.x) * K + tile_offset + threadIdx.y];
+            sB[threadIdx.y][threadIdx.x] = B[(col_offset + threadIdx.x) * K + tile_offset + threadIdx.y];
         }
         else
         {
-            sB[threadIdx.x][threadIdx.y] = T(0);
+            sB[threadIdx.y][threadIdx.x] = T(0);
         }
         
         __syncthreads(); 
@@ -377,7 +380,7 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
                     T accum(0);
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        accum += alpha * lA[k] * sB[lc][k];
+                        accum += alpha * lA[k] * sB[k][lc];
                     }
                     C[(col_offset + lc) * M + row] += accum;
                 }
@@ -416,7 +419,7 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
 {
     int const Ntile = Mtile / Ktile;
     
-    T __shared__ sB[Ntile][Ktile];
+    T __shared__ sB[Ktile][Ntile];
     T lA[Ktile];
     
     int const num_tiles = (K + Ktile - 1) / Ktile;
@@ -438,11 +441,11 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
         
         if ((col_offset + threadIdx.x) < N && (tile_offset + threadIdx.y) < K)
         {
-            sB[threadIdx.x][threadIdx.y] = B[(col_offset + threadIdx.x) * K + tile_offset + threadIdx.y];
+            sB[threadIdx.y][threadIdx.x] = B[(col_offset + threadIdx.x) * K + tile_offset + threadIdx.y];
         }
         else
         {
-            sB[threadIdx.x][threadIdx.y] = T(0);
+            sB[threadIdx.y][threadIdx.x] = T(0);
         }
         
         __syncthreads(); 
@@ -469,7 +472,7 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
                     T accum(0);
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        accum += alpha * lA[k] * sB[lc][k];
+                        accum += alpha * lA[k] * sB[k][lc];
                     }
                     C[(col_offset + lc) * M + row] += accum;
                 }
