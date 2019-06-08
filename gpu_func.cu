@@ -410,7 +410,7 @@ void shared2_gemm_wrapper(T const * A, T const * B, T * C,
     else
     {
         int const Mtile = 128;
-        int const Ktile = 4;
+        int const Ktile = 8;
         int const Ntile = Mtile / Ktile;
 
         dim3 const threads(Ntile, Ktile);
