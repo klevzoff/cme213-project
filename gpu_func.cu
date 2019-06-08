@@ -396,14 +396,28 @@ void shared2_gemm_wrapper(T const * A, T const * B, T * C,
                           T const alpha, T const beta,
                           int M, int N, int K) 
 {  
-    int const Mtile = 64;
-    int const Ktile = 4;
-    int const Ntile = Mtile / Ktile;
-    
-    dim3 const threads(Ntile, Ktile);
-    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
-    
-    shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    if (N <= 16)
+    {
+        int const Mtile = 64;
+        int const Ktile = 4;
+        int const Ntile = Mtile / Ktile;
+
+        dim3 const threads(Ntile, Ktile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+
+        shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    }
+    else
+    {
+        int const Mtile = 128;
+        int const Ktile = 4;
+        int const Ntile = Mtile / Ktile;
+
+        dim3 const threads(Ntile, Ktile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+
+        shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    }
     
     check_launch("shared2_gemm");
 }
