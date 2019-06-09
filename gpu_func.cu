@@ -378,11 +378,12 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
                 }
             }
 
-            for (int k = 0; k < Ktile; ++k)
+            for (int lc = 0; lc < Ntile; ++lc)
             {
-                for (int lc = 0; lc < Ntile; ++lc)
+                if (col_offset + lc < N)
                 {
-                    if (col_offset + lc < N)
+                    #pragma unroll
+                    for (int k = 0; k < Ktile; ++k)
                     {
                         lC[lc] += lA[k] * sB[lc][k];
                     }
@@ -474,11 +475,12 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
                 }
             }
 
-            for (int k = 0; k < Ktile; ++k)
+            for (int lc = 0; lc < Ntile; ++lc)
             {
-                for (int lc = 0; lc < Ntile; ++lc)
+                if (col_offset + lc < N)
                 {
-                    if (col_offset + lc < N)
+                    #pragma unroll
+                    for (int k = 0; k < Ktile; ++k)
                     {
                         lC[lc] += lA[k] * sB[lc][k];
                     }
