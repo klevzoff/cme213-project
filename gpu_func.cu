@@ -378,12 +378,11 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
                 }
             }
 
-            for (int lc = 0; lc < Ntile; ++lc)
+            for (int k = 0; k < Ktile; ++k)
             {
-                if (col_offset + lc < N)
+                for (int lc = 0; lc < Ntile; ++lc)
                 {
-                    #pragma unroll
-                    for (int k = 0; k < Ktile; ++k)
+                    if (col_offset + lc < N)
                     {
                         lC[lc] += lA[k] * sB[lc][k];
                     }
