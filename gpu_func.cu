@@ -343,17 +343,6 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
     int const row = Mtile * blockIdx.y + Ktile * threadIdx.y + threadIdx.x;
     int const col_offset = Ntile * blockIdx.x;
     
-    if (row < M)
-    {
-        for (int lc = 0; lc < Ntile; ++lc)
-        {
-            if (col_offset + lc < N)
-            {
-                lC[lc] = beta * C[(col_offset + lc) * M + row];
-            }
-        }
-    }
-    
     for (int tile = 0; tile < num_tiles; ++tile)
     {
         int const tile_offset = tile * Ktile;
@@ -391,7 +380,7 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
                     #pragma unroll
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        lC[lc] += alpha * lA[k] * sB[lc][k];
+                        lC[lc] += lA[k] * sB[lc][k];
                     }
                 }
             }
@@ -406,7 +395,7 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
         {
             if (col_offset + lc < N)
             {
-                C[(col_offset + lc) * M + row] = lC[lc];
+                C[(col_offset + lc) * M + row] = beta * C[(col_offset + lc) * M + row] + alpha * lC[lc];
             }
         }
     }
@@ -451,17 +440,6 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
     int const row = Mtile * blockIdx.y + Ktile * threadIdx.y + threadIdx.x;
     int const col_offset = Ntile * blockIdx.x;
     
-    if (row < M)
-    {
-        for (int lc = 0; lc < Ntile; ++lc)
-        {
-            if (col_offset + lc < N)
-            {
-                lC[lc] = beta * d[row];
-            }
-        }
-    }
-    
     for (int tile = 0; tile < num_tiles; ++tile)
     {
         int const tile_offset = tile * Ktile;
@@ -499,7 +477,7 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
                     #pragma unroll
                     for (int k = 0; k < Ktile; ++k)
                     {
-                        lC[lc] += alpha * lA[k] * sB[lc][k];
+                        lC[lc] += lA[k] * sB[lc][k];
                     }
                 }
             }
@@ -514,7 +492,7 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
         {
             if (col_offset + lc < N)
             {
-                C[(col_offset + lc) * M + row] = lC[lc];
+                C[(col_offset + lc) * M + row] = beta * d[row] + alpha * lC[lc];
             }
         }
     }
