@@ -7,7 +7,7 @@ PROF_DIR=profile/analysis/$DATE
 OUT_DIR=$BASE_DIR/$PROF_DIR
 NVPROF=/usr/local/cuda-10.0/bin/nvprof
 
-CMD="sudo $NVPROF --analysis-metrics --output-profile $OUT_DIR/profile.%p.nvprof $BASE_DIR/main $@"
+CMD="sudo $NVPROF --kernels shared2_gemm_kernel --analysis-metrics --output-profile $OUT_DIR/profile.%p.nvprof $BASE_DIR/main $@"
 
 echo
 echo "=========================================================================="
