@@ -511,7 +511,7 @@ void shared2_gemmpv_wrapper(T const * __restrict__ A,
                             int M, int N, int K) 
 {    
     int const Mtile = 64;
-    int const Ktile = 4;
+    int const Ktile = 8;
     int const Ntile = Mtile / Ktile;
 
     dim3 const threads(Ktile, Ntile);
