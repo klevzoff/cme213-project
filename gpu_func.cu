@@ -510,7 +510,7 @@ void shared2_gemmpv_wrapper(T const * __restrict__ A,
                             T const alpha, T const beta,
                             int M, int N, int K) 
 {    
-    int const Mtile = 64;
+    int const Mtile = 128;
     int const Ktile = 8;
     int const Ntile = Mtile / Ktile;
 
