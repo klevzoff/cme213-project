@@ -866,7 +866,7 @@ void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cac
     normalize(cache.a[1]);
 }
 
-void device_backprop(device_nn const & nn, DMat const & X, DMat const & y, double reg,
+void device_backprop(device_nn const & nn, DMat const & Xt, DMat const & y, double reg,
                      device_cache const & bpcache, device_grads & bpgrads, int N, int num_procs)
 {
     bpgrads.dW.resize(2);
@@ -881,12 +881,8 @@ void device_backprop(device_nn const & nn, DMat const & X, DMat const & y, doubl
     DMat dz1 = sigmoid_derivative(bpcache.a[0]);
     hadamard(da1, dz1, dz1);
     
-    //bpgrads.dW[0] = nn.W[0];
-    //gemm(1.0, dz1, transpose(X), reg / num_procs, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
-    
-    DMat temp = transpose(nn.W[0]);
-    gemm(1.0, X, transpose(dz1), reg / num_procs, temp);
-    bpgrads.dW[0] = transpose(temp);
+    bpgrads.dW[0] = nn.W[0];
+    gemm(1.0, dz1, Xt, reg / num_procs, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
     
     bpgrads.db[0] = sum(dz1, 1);
 }
@@ -912,6 +908,7 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
     int const num_batches = (N + batch_size - 1) / batch_size;
     
     std::vector<DMat> X_batch(num_batches);
+    std::vector<DMat> Xt_batch(num_batches);
     std::vector<DMat> y_batch(num_batches);
     std::vector<int> num_col(num_batches);
     
@@ -956,6 +953,7 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
 
         X_batch[batch] = to_device(X_batch_host);
         y_batch[batch] = to_device(y_batch_host);
+        Xt_batch[batch] = transpose(X_batch[batch]);
     }
     
     // copy the whole network onto device
@@ -971,11 +969,12 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
     {
         for (int batch = 0; batch < num_batches; ++batch)
         {                  
-            DMat const & dX_batch = X_batch[batch];
-            DMat const & dy_batch = y_batch[batch];
+            DMat const & dX_batch  = X_batch[batch];
+            DMat const & dXt_batch = Xt_batch[batch];
+            DMat const & dy_batch  = y_batch[batch];
 
             device_feedforward(dnn, dX_batch, bpcache);
-            device_backprop(dnn, dX_batch, dy_batch, reg, bpcache, bpgrads, num_col[batch], num_procs);
+            device_backprop(dnn, dXt_batch, dy_batch, reg, bpcache, bpgrads, num_col[batch], num_procs);
             
             // the code below works properly, but commented out to avoid losing time  
             /*
