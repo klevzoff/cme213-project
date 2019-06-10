@@ -702,10 +702,16 @@ void gemmpv_exponent(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T 
 }
 
 template<typename T>
+void matmult(DeviceMat<T> const & A, DeviceMat<T> const & B, DeviceMat<T> & C)
+{
+    gemm(T(1), A, B, T(0), C);
+}
+
+template<typename T>
 DeviceMat<T> matmult(DeviceMat<T> const & A, DeviceMat<T> const & B)
 {
     DeviceMat<T> C(A.nrow(), B.ncol());
-    gemm(T(1), A, B, T(0), C);
+    matmult(A, B, C);
     return C;
 }
 
@@ -870,14 +876,30 @@ void device_backprop(device_nn const & nn, DMat const & Xt, DMat const & y, doub
 {
     bpgrads.dW.resize(2);
     bpgrads.db.resize(2);
+    
+    static DMat a0t;
+    a0t.resize(bpcache.a[0].ncol(), bpcache.a[0].nrow());
+    transpose(bpcache.a[0], a0t);
 
-    DMat diff = axpby(1.0 / N, bpcache.a[1], -1.0 / N, y);
+    static DMat diff;
+    diff.resize(y.nrow(), y.ncol());
+    axpby(1.0 / N, bpcache.a[1], -1.0 / N, y, diff);
+    
     bpgrads.dW[1] = nn.W[1];
-    gemm(1.0, diff, transpose(bpcache.a[0]), reg / num_procs, bpgrads.dW[1]); // M = 10, N = 100(0), K = 800
+    gemm(1.0, diff, a0t, reg / num_procs, bpgrads.dW[1]); // M = 10, N = 100(0), K = 800
     bpgrads.db[1] = sum(diff, 1);
     
-    DMat da1 = matmult(transpose(nn.W[1]), diff); // M = 100(0), N = 800, K = 10
-    DMat dz1 = sigmoid_derivative(bpcache.a[0]);
+    static DMat W1t;
+    W1t.resize(nn.W[1].ncol(), nn.W[1].nrow());
+    transpose(nn.W[1], W1t);
+    
+    static DMat da1;
+    da1.resize(W1t.nrow(), diff.ncol());  
+    matmult(W1t, diff, da1); // M = 100(0), N = 800, K = 10
+    
+    static DMat dz1;
+    dz1.resize(da1.nrow(), da1.ncol());
+    sigmoid_derivative(bpcache.a[0], dz1);
     hadamard(da1, dz1, dz1);
     
     bpgrads.dW[0] = nn.W[0];
