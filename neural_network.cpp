@@ -881,8 +881,13 @@ void device_backprop(device_nn const & nn, DMat const & X, DMat const & y, doubl
     DMat dz1 = sigmoid_derivative(bpcache.a[0]);
     hadamard(da1, dz1, dz1);
     
-    bpgrads.dW[0] = nn.W[0];
-    gemm(1.0, dz1, transpose(X), reg / num_procs, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
+    //bpgrads.dW[0] = nn.W[0];
+    //gemm(1.0, dz1, transpose(X), reg / num_procs, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
+    
+    DMat temp = transpose(nn.W[0]);
+    gemm(1.0, X, transpose(dz1), reg / num_procs, temp);
+    bpgrads.dW[0] = transpose(temp);
+    
     bpgrads.db[0] = sum(dz1, 1);
 }
 
