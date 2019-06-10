@@ -6,6 +6,8 @@
 #include "mpi.h"
 #include "iomanip"
 #include <vector>
+#include <cmath>
+#include <numeric>
 
 #define MPI_SAFE_CALL( call ) do {                               \
     int err = call;                                              \
@@ -865,14 +867,14 @@ void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cac
 }
 
 void device_backprop(device_nn const & nn, DMat const & X, DMat const & y, double reg,
-                     device_cache const & bpcache, device_grads & bpgrads)
+                     device_cache const & bpcache, device_grads & bpgrads, int N, int num_procs)
 {
     bpgrads.dW.resize(2);
     bpgrads.db.resize(2);
 
-    DMat diff = axpby(1.0 / y.ncol(), bpcache.a[1], -1.0 / y.ncol(), y);
+    DMat diff = axpby(1.0 / N, bpcache.a[1], -1.0 / N, y);
     bpgrads.dW[1] = nn.W[1];
-    gemm(1.0, diff, transpose(bpcache.a[0]), reg, bpgrads.dW[1]); // M = 10, N = 100(0), K = 800
+    gemm(1.0, diff, transpose(bpcache.a[0]), reg / num_procs, bpgrads.dW[1]); // M = 10, N = 100(0), K = 800
     bpgrads.db[1] = sum(diff, 1);
     
     DMat da1 = matmult(transpose(nn.W[1]), diff); // M = 100(0), N = 800, K = 10
@@ -880,7 +882,7 @@ void device_backprop(device_nn const & nn, DMat const & X, DMat const & y, doubl
     hadamard(da1, dz1, dz1);
     
     bpgrads.dW[0] = nn.W[0];
-    gemm(1.0, dz1, transpose(X), reg, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
+    gemm(1.0, dz1, transpose(X), reg / num_procs, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
     bpgrads.db[0] = sum(dz1, 1);
 }
 
@@ -906,28 +908,46 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
     
     std::vector<DMat> X_batch(num_batches);
     std::vector<DMat> y_batch(num_batches);
+    std::vector<int> num_col(num_batches);
     
     // distribute the input
     for (int batch = 0; batch < num_batches; ++batch)
     {         
         int const first_col = batch * batch_size;
         int const last_col = std::min((batch + 1)*batch_size-1, N-1);
-        int const num_col = last_col - first_col + 1;
-        int const num_col_rank = num_col / num_procs; // assume equal for now
+        num_col[batch] = last_col - first_col + 1;
+        
+        // trying to get as fair a distribution as possible
+        double const nc_per_rank = double(num_col[batch]) / num_procs;
+        std::vector<int> num_col_rank(num_procs);
+        std::vector<int> sendcounts_X(num_procs);
+        std::vector<int> sendcounts_y(num_procs);
 
-        arma::mat X_batch_host(nn.H[0], num_col_rank);
-        arma::mat y_batch_host(nn.H[nn.num_layers], num_col_rank);
+        for (int irank = 0; irank < num_procs; ++irank)
+        {
+            num_col_rank[irank] = static_cast<int>(std::lround((irank+1) * nc_per_rank) - std::lround(irank * nc_per_rank));
+            sendcounts_X[irank] = num_col_rank[irank] * nn.H[0];
+            sendcounts_y[irank] = num_col_rank[irank] * nn.H[nn.num_layers];
+        }
+        
+        std::vector<int> senddispls_X(num_procs, 0);
+        std::vector<int> senddispls_y(num_procs, 0);
+        std::partial_sum(sendcounts_X.begin(), sendcounts_X.end()-1, senddispls_X.begin()+1);
+        std::partial_sum(sendcounts_y.begin(), sendcounts_y.end()-1, senddispls_y.begin()+1);
+       
+        arma::mat X_batch_host(nn.H[0], num_col_rank[rank]);
+        arma::mat y_batch_host(nn.H[nn.num_layers], num_col_rank[rank]);
 
         double const * const X_sendbuf = (rank == 0) ? X.colptr(first_col) : nullptr;
         double const * const y_sendbuf = (rank == 0) ? y.colptr(first_col) : nullptr;
 
-        MPI_SAFE_CALL(MPI_Scatter(X_sendbuf, num_col_rank * nn.H[0], MPI_DOUBLE, 
-                                  X_batch_host.memptr(), num_col_rank * nn.H[0], MPI_DOUBLE, 
-                                  0, MPI_COMM_WORLD));
+        MPI_SAFE_CALL(MPI_Scatterv(X_sendbuf, sendcounts_X.data(), senddispls_X.data(), MPI_DOUBLE, 
+                                   X_batch_host.memptr(), sendcounts_X[rank], MPI_DOUBLE, 
+                                   0, MPI_COMM_WORLD));
 
-        MPI_SAFE_CALL(MPI_Scatter(y_sendbuf, num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
-                                  y_batch_host.memptr(), num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
-                                  0, MPI_COMM_WORLD));
+        MPI_SAFE_CALL(MPI_Scatterv(y_sendbuf, sendcounts_y.data(), senddispls_y.data(), MPI_DOUBLE, 
+                                   y_batch_host.memptr(), sendcounts_y[rank], MPI_DOUBLE, 
+                                   0, MPI_COMM_WORLD));
 
         X_batch[batch] = to_device(X_batch_host);
         y_batch[batch] = to_device(y_batch_host);
@@ -950,7 +970,7 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
             device_feedforward(dnn, dX_batch, bpcache);
 
             device_grads bpgrads;
-            device_backprop(dnn, dX_batch, dy_batch, reg, bpcache, bpgrads);
+            device_backprop(dnn, dX_batch, dy_batch, reg, bpcache, bpgrads, num_col[batch], num_procs);
             
             // the code below works properly, but commented out to avoid losing time in grading mode 3  
             /*
@@ -979,8 +999,8 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
             {
                 allreduce(bpgrads.dW[i]);
                 allreduce(bpgrads.db[i]);
-                axpby(1.0, dnn.W[i], -learning_rate / num_procs, bpgrads.dW[i], dnn.W[i]);
-                axpby(1.0, dnn.b[i], -learning_rate / num_procs, bpgrads.db[i], dnn.b[i]);
+                axpby(1.0, dnn.W[i], -learning_rate, bpgrads.dW[i], dnn.W[i]);
+                axpby(1.0, dnn.b[i], -learning_rate, bpgrads.db[i], dnn.b[i]);
             }
 
             if (print_every <= 0)
