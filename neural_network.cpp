@@ -959,6 +959,9 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
 
     int iter = 0;
 
+    device_cache bpcache;
+    device_grads bpgrads;
+    
     for (int epoch = 0; epoch < epochs; ++epoch)
     {
         for (int batch = 0; batch < num_batches; ++batch)
@@ -966,13 +969,10 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
             DMat const & dX_batch = X_batch[batch];
             DMat const & dy_batch = y_batch[batch];
 
-            device_cache bpcache;
             device_feedforward(dnn, dX_batch, bpcache);
-
-            device_grads bpgrads;
             device_backprop(dnn, dX_batch, dy_batch, reg, bpcache, bpgrads, num_col[batch], num_procs);
             
-            // the code below works properly, but commented out to avoid losing time in grading mode 3  
+            // the code below works properly, but commented out to avoid losing time  
             /*
             if (print_every > 0 && iter % print_every == 0)
             {
@@ -1012,13 +1012,14 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
                 print_flag = iter % print_every == 0;
             }
 
-            /* Following debug routine assumes that you have already updated the arma
-               matrices in the NeuralNetwork nn.  */
+            // the code below works properly, but commented out to avoid losing time  
+            /*
             if (debug && rank == 0 && print_flag)
             {
                 to_host(dnn, nn); // copy network onto host for debugging output
                 write_diff_gpu_cpu(nn, iter, error_file);
             }
+            */
 
             iter++;
         }
