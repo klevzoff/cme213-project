@@ -779,18 +779,16 @@ struct device_cache
     std::vector<DMat> a;
 };
 
-arma::mat to_host(DMat const & dmat)
+void to_host(DMat const & dmat, arma::mat & hmat)
 {
-    arma::mat hmat(dmat.nrow(), dmat.ncol());
+    hmat.resize(dmat.nrow(), dmat.ncol());
     dmat.copy_to_host(hmat.memptr());
-    return hmat;
 }
 
-DMat to_device(arma::mat const & hmat)
+void to_device(arma::mat const & hmat, DMat & dmat)
 {
-    DMat dmat(hmat.n_rows, hmat.n_cols);
+    dmat.resize(hmat.n_rows, hmat.n_cols);
     dmat.copy_from_host(hmat.memptr());
-    return dmat;
 }
 
 void to_device(NeuralNetwork const & hnn, device_nn & dnn)
@@ -801,8 +799,8 @@ void to_device(NeuralNetwork const & hnn, device_nn & dnn)
     dnn.b.resize(hnn.num_layers);
     for (int i = 0; i < hnn.num_layers; ++i)
     {
-        dnn.W[i] = to_device(hnn.W[i]);
-        dnn.b[i] = to_device(hnn.b[i]);
+        to_device(hnn.W[i], dnn.W[i]);
+        to_device(hnn.b[i], dnn.b[i]);
     }
 }
 
@@ -813,8 +811,8 @@ void to_host(device_nn const & dnn, NeuralNetwork & hnn)
     hnn.b.resize(dnn.num_layers);
     for (int i = 0; i < dnn.num_layers; ++i)
     {
-        hnn.W[i] = to_host(dnn.W[i]);
-        hnn.b[i] = to_host(dnn.b[i]);
+        to_host(dnn.W[i], hnn.W[i]);
+        to_host(dnn.b[i], hnn.b[i]);
     }
 }
 
@@ -825,8 +823,8 @@ void to_device(grads const & hgrads, device_grads & dgrads)
     dgrads.db.resize(num_layers);
     for (int i = 0; i < num_layers; ++i)
     {
-        dgrads.dW[i] = to_device(hgrads.dW[i]);
-        dgrads.db[i] = to_device(hgrads.db[i]);
+        to_device(hgrads.dW[i], dgrads.dW[i]);
+        to_device(hgrads.db[i], dgrads.db[i]);
     }
 }
 
@@ -837,17 +835,18 @@ void to_host(device_grads const & dgrads, grads & hgrads)
     hgrads.db.resize(num_layers);
     for (int i = 0; i < num_layers; ++i)
     {
-        hgrads.dW[i] = to_host(dgrads.dW[i]);
-        hgrads.db[i] = to_host(dgrads.db[i]);
+        to_host(dgrads.dW[i], hgrads.dW[i]);
+        to_host(dgrads.db[i], hgrads.db[i]);
     }
 }
 
-void allreduce(DMat & A)
+void allreduce(DMat & dA)
 {
-    arma::mat hA = to_host(A);
+    arma::mat hA;
+    to_host(dA, hA);
     MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, hA.memptr(), hA.n_rows * hA.n_cols, 
                                 MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
-    A = to_device(hA);
+    to_device(hA, dA);
 }
 
 /**
@@ -951,8 +950,8 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
                                    y_batch_host.memptr(), sendcounts_y[rank], MPI_DOUBLE, 
                                    0, MPI_COMM_WORLD));
 
-        X_batch[batch] = to_device(X_batch_host);
-        y_batch[batch] = to_device(y_batch_host);
+        to_device(X_batch_host, X_batch[batch]);
+        to_device(y_batch_host, y_batch[batch]);
         Xt_batch[batch] = transpose(X_batch[batch]);
     }
     
@@ -982,19 +981,28 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
             {
                 to_host(dnn, nn);
                 
+                arma::mat hy_batch;
+                to_host(dy_batch, hy_batch);
+                
                 if (grad_check)
                 {
+                    arma::mat hX_batch;
+                    to_host(dX_batch, hX_batch);
+                
                     grads numgrads;
-                    numgrad(nn, to_host(dX_batch), to_host(dy_batch), reg, numgrads);
+                    numgrad(nn, hX_batch, hy_batch, reg, numgrads);
                     
                     grads host_bpgrads;
                     to_host(bpgrads, host_bpgrads);
                     
                     assert(gradcheck(numgrads, host_bpgrads));
                 }
+                
+                arma::mat a1;
+                to_host(bpcache.a[1], a1);
 
                 std::cout << "Loss at iteration " << iter << " of epoch " << epoch << "/" <<
-                          epochs << " = " << loss(nn, to_host(bpcache.a[1]), to_host(dy_batch), reg) << "\n";
+                          epochs << " = " << loss(nn, a1, hy_batch, reg) << "\n";
             }
             */
             
