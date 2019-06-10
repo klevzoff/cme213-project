@@ -507,14 +507,28 @@ void shared2_gemm_wrapper(T const * __restrict__ A,
                           T const alpha, T const beta,
                           int M, int N, int K) 
 {
-    int const Mtile = 64;
-    int const Ktile = 4;
-    int const Ntile = Mtile / Ktile;
+    if (M < 512 || N < 128)
+    {
+        int const Mtile = 64;
+        int const Ktile = 4;
+        int const Ntile = Mtile / Ktile;
 
-    dim3 const threads(Ktile, Ntile);
-    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+        dim3 const threads(Ktile, Ntile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-    shared2_gemm_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+        shared2_gemm_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    }
+    else // this gives slightly better (5-10%) results on large enough matrices
+    {
+        int const Mtile = 128;
+        int const Ktile = 8;
+        int const Ntile = Mtile / Ktile;
+
+        dim3 const threads(Ktile, Ntile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+
+        shared2_gemm_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    }
     
     check_launch("shared2_gemm");
 }
@@ -605,14 +619,28 @@ void shared2_gemmpv_wrapper(T const * __restrict__ A,
                             T const alpha, T const beta,
                             int M, int N, int K) 
 {    
-    int const Mtile = 64;
-    int const Ktile = 4;
-    int const Ntile = Mtile / Ktile;
+    if (M < 512 || N < 128)
+    {
+        int const Mtile = 64;
+        int const Ktile = 4;
+        int const Ntile = Mtile / Ktile;
 
-    dim3 const threads(Ktile, Ntile);
-    dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+        dim3 const threads(Ktile, Ntile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-    shared2_gemmpv_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+        shared2_gemmpv_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    }
+    else // this gives slightly better (5-10%) results on large enough matrices
+    {
+        int const Mtile = 128;
+        int const Ktile = 8;
+        int const Ntile = Mtile / Ktile;
+
+        dim3 const threads(Ktile, Ntile);
+        dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
+
+        shared2_gemmpv_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);   
+    }
     
     check_launch("shared2_gemmpv");
 }
@@ -862,12 +890,10 @@ void axpby_wrapper(T a, T const * X, T b, T const * Y, T * Z, int N)
  */
 
 #define INST_WRAPPER_TEMPLATES(T) \
-template void simple_gemm_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void simple_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void shared_gemm_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void shared_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void shared2_gemm_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::sigmoid,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::exponent,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
 template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \
