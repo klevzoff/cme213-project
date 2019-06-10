@@ -841,9 +841,8 @@ void to_host(device_grads const & dgrads, grads & hgrads)
     }
 }
 
-void allreduce(DMat & dA)
+void allreduce(DMat & dA, arma::mat & hA)
 {
-    arma::mat hA;
     to_host(dA, hA);
     MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, hA.memptr(), hA.n_rows * hA.n_cols, 
                                 MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
@@ -855,9 +854,7 @@ void allreduce(DMat & dA)
  */ 
 
 void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cache)
-{
-    cache.a.resize(2);
-    
+{  
     cache.a[0].resize(nn.W[0].nrow(), X.ncol()); // use fused kernel with sigmoid
     gemmpv_sigmoid(1.0, nn.W[0], X, 1.0, nn.b[0], cache.a[0]); // M = 100(0), N = 800, K = 784
 
@@ -868,10 +865,7 @@ void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cac
 
 void device_backprop(device_nn const & nn, DMat const & Xt, DMat const & y, double reg,
                      device_cache const & bpcache, device_grads & bpgrads, int N, int num_procs)
-{
-    bpgrads.dW.resize(2);
-    bpgrads.db.resize(2);
-    
+{   
     static DMat a0t;
     a0t.resize(bpcache.a[0].ncol(), bpcache.a[0].nrow());
     transpose(bpcache.a[0], a0t);
@@ -980,6 +974,13 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
 
     device_cache bpcache;
     device_grads bpgrads;
+    grads host_grads;
+    
+    bpcache.a.resize(2);
+    bpgrads.dW.resize(2);
+    bpgrads.db.resize(2);
+    host_grads.dW.resize(2);
+    host_grads.db.resize(2);
     
     for (int epoch = 0; epoch < epochs; ++epoch)
     {
@@ -1026,8 +1027,11 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
             // Gradient descent step
             for (int i = 0; i < dnn.num_layers; ++i)
             {
-                allreduce(bpgrads.dW[i]);
-                allreduce(bpgrads.db[i]);
+                if (num_procs > 1)
+                {
+                    allreduce(bpgrads.dW[i], host_grads.dW[i]);
+                    allreduce(bpgrads.db[i], host_grads.db[i]);
+                }
                 axpby(1.0, dnn.W[i], -learning_rate, bpgrads.dW[i], dnn.W[i]);
                 axpby(1.0, dnn.b[i], -learning_rate, bpgrads.db[i], dnn.b[i]);
             }
