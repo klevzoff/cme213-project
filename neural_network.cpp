@@ -492,7 +492,7 @@ template<typename OP, typename T>
 void colreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
 {
     assert(dst.nrow() == 1 && dst.ncol() == src.ncol());
-    reduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
+    colreduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
 }
 
 template<typename OP, typename T>
@@ -507,12 +507,7 @@ template<typename OP, typename T>
 void rowreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
 {
     assert(dst.ncol() == 1 && dst.nrow() == src.nrow());
-    
-    // TODO proper row reduction without transpose
-    DeviceMat<T> src_temp = transpose(src);
-    DeviceMat<T> dst_temp(1, src_temp.ncol());
-    colreduce<OP>(src_temp, dst_temp);
-    dst = transpose(dst_temp);
+    rowreduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
 }
 
 template<typename OP, typename T>

@@ -736,19 +736,19 @@ void transpose_wrapper(T const * src, T * dst, int M, int N)
 /* ============================== reductions ============================= */
 
 template<int block_size, typename OP, typename T>
-__global__ void block_reduce_kernel(T const * __restrict__ data, T * __restrict__ res, int M, int N)
+__global__ void colreduce_kernel(T const * __restrict__ data, T * __restrict__ res, int M, int N)
 {
     int const tid = threadIdx.x;
-    int const col_offset = blockIdx.y * M;
-    int const row_offset = 2 * block_size * blockIdx.x + threadIdx.x;
+    int const col = blockIdx.y;
+    int const row = 2 * block_size * blockIdx.x + threadIdx.x;
     
     T __shared__ sdata[block_size];
     
-    sdata[tid] = (row_offset < M) ? data[col_offset + row_offset] : T(0);
+    sdata[tid] = (row < M) ? data[col * M + row] : T(0);
     
-    if (row_offset + block_size < M)
+    if (row + block_size < M)
     {
-        sdata[tid] = OP::template apply(sdata[tid], data[col_offset + row_offset + block_size]);
+        sdata[tid] = OP::template apply(sdata[tid], data[col * M + row + block_size]);
     }
     
     __syncthreads();
@@ -765,12 +765,12 @@ __global__ void block_reduce_kernel(T const * __restrict__ data, T * __restrict_
     
     if (tid == 0)
     {
-        res[blockIdx.x + blockIdx.y * gridDim.x] = sdata[0];
+        res[col * gridDim.x + blockIdx.x] = sdata[0];
     }
 }
 
 template<typename OP, typename T>
-void reduce_wrapper(T const * data, T * res, int M, int N)
+void colreduce_wrapper(T const * data, T * res, int M, int N)
 {
     int const threads = 256;
     int const nblocks = (M + 2 * threads - 1) / (2 * threads);
@@ -779,17 +779,77 @@ void reduce_wrapper(T const * data, T * res, int M, int N)
     T * block_res;
     cudaMalloc((void**) &block_res, nblocks * N * sizeof(T));
     
-    block_reduce_kernel<threads, OP><<<blocks, threads>>>(data, block_res, M, N);
+    colreduce_kernel<threads, OP><<<blocks, threads>>>(data, block_res, M, N);
     
-    check_launch("reduce");
+    check_launch("colreduce");
     
     if (nblocks > 1)
     {
-        reduce_wrapper<OP>(block_res, res, nblocks, N);
+        colreduce_wrapper<OP>(block_res, res, nblocks, N);
     }
     else
     {
         cudaMemcpy(res, block_res, N * sizeof(T), cudaMemcpyDeviceToDevice);
+    }
+    
+    cudaFree(block_res);
+}
+
+template<int block_size, typename OP, typename T>
+__global__ void rowreduce_kernel(T const * __restrict__ data, T * __restrict__ res, int M, int N)
+{
+    int const tid = threadIdx.x;
+    int const col = 2 * block_size * blockIdx.x + threadIdx.x;
+    int const row = blockIdx.y;
+    
+    T __shared__ sdata[block_size];
+    
+    sdata[tid] = (col < N) ? data[col * M + row] : T(0);
+    
+    if (col + block_size < N)
+    {
+        sdata[tid] = OP::template apply(sdata[tid], data[(col + block_size) * M + row]);
+    }
+    
+    __syncthreads();
+    
+    for (int i = block_size/2; i > 0; i >>= 1)
+    {
+        if (tid < i)
+        {
+            sdata[tid] = OP::template apply(sdata[tid], sdata[tid + i]);
+        }
+        
+        __syncthreads();
+    }
+    
+    if (tid == 0)
+    {
+        res[blockIdx.x * M + row] = sdata[0];
+    }
+}
+
+template<typename OP, typename T>
+void rowreduce_wrapper(T const * data, T * res, int M, int N)
+{
+    int const threads = 256;
+    int const nblocks = (N + 2 * threads - 1) / (2 * threads);
+    dim3 const blocks(nblocks, M);
+    
+    T * block_res;
+    cudaMalloc((void**) &block_res, nblocks * M * sizeof(T));
+    
+    rowreduce_kernel<threads, OP><<<blocks, threads>>>(data, block_res, M, N);
+    
+    check_launch("rowreduce");
+    
+    if (nblocks > 1)
+    {
+        rowreduce_wrapper<OP>(block_res, res, M, nblocks);
+    }
+    else
+    {
+        cudaMemcpy(res, block_res, M * sizeof(T), cudaMemcpyDeviceToDevice);
     }
     
     cudaFree(block_res);
@@ -900,8 +960,8 @@ template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::i
 template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::sigmoid,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::exponent,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
-template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
-template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \
+template void colreduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
+template void rowreduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 template void coldiv_wrapper<T>(T * data, T const * divs, int M, int N); \
 template void apply_wrapper<un_ops::exponent,T>(T const * src, T * dst, int N); \
 template void apply_wrapper<un_ops::sigmoid,T>(T const * src, T * dst, int N); \

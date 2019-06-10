@@ -92,7 +92,10 @@ template<typename T>
 void transpose_wrapper(T const * src, T * dst, int M, int N);
 
 template<typename OP, typename T>
-void reduce_wrapper(T const * data, T * res, int M, int N);
+void colreduce_wrapper(T const * data, T * res, int M, int N);
+
+template<typename OP, typename T>
+void rowreduce_wrapper(T const * data, T * res, int M, int N);
 
 template<typename T>
 void coldiv_wrapper(T * data, T const * divs, int M, int N);
@@ -116,8 +119,8 @@ extern template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un
 extern template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::sigmoid,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 extern template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::exponent,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 extern template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
-extern template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
-extern template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \
+extern template void colreduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
+extern template void rowreduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 extern template void coldiv_wrapper<T>(T * data, T const * divs, int M, int N); \
 extern template void apply_wrapper<un_ops::exponent,T>(T const * src, T * dst, int N); \
 extern template void apply_wrapper<un_ops::sigmoid,T>(T const * src, T * dst, int N); \
