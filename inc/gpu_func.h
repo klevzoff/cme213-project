@@ -70,46 +70,22 @@ struct greater_of;
  * Kernel wrapper declarations
  */
 
-template<typename OP_A = un_ops::identity,
-         typename OP_B = un_ops::identity, 
-         typename OP_C = un_ops::identity, 
-         typename OP_R = un_ops::identity,
-         typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void simple_gemm_wrapper(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K);
 
-template<typename OP_A = un_ops::identity,
-         typename OP_B = un_ops::identity, 
-         typename OP_C = un_ops::identity, 
-         typename OP_R = un_ops::identity,
-         typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void simple_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K);
 
-template<typename OP_A = un_ops::identity,
-         typename OP_B = un_ops::identity, 
-         typename OP_C = un_ops::identity, 
-         typename OP_R = un_ops::identity,
-         typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared_gemm_wrapper(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K);
     
-template<typename OP_A = un_ops::identity,
-         typename OP_B = un_ops::identity, 
-         typename OP_C = un_ops::identity, 
-         typename OP_R = un_ops::identity,
-         typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K);
 
-template<typename OP_A = un_ops::identity,
-         typename OP_B = un_ops::identity, 
-         typename OP_C = un_ops::identity, 
-         typename OP_R = un_ops::identity,
-         typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared2_gemm_wrapper(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K);
     
-template<typename OP_A = un_ops::identity,
-         typename OP_B = un_ops::identity, 
-         typename OP_C = un_ops::identity, 
-         typename OP_R = un_ops::identity,
-         typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared2_gemmpv_wrapper(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K);
 
 template<typename T>

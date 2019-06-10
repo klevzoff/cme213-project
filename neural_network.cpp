@@ -670,19 +670,23 @@ DeviceMat<T> softmax(DeviceMat<T> const & src)
 template<typename T>
 void gemm(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> & C)
 {
+    typedef un_ops::identity eye; // shortcut
+    
     assert(C.nrow() == A.nrow() && C.ncol() == B.ncol());
-    //simple_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-    //shared_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-    shared2_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //simple_gemm_wrapper<eye,eye,eye,eye>(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //shared_gemm_wrapper<eye,eye,eye,eye>(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared2_gemm_wrapper<eye,eye,eye,eye>(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
 }
 
 template<typename T>
 void gemmpv(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> const & d, DeviceMat<T> & C)
 {
+    typedef un_ops::identity eye; // shortcut
+    
     assert(C.nrow() == A.nrow() && C.ncol() == B.ncol() && d.nrow() == A.nrow());
-    //simple_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-    //shared_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
-    shared2_gemmpv_wrapper(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //simple_gemmpv_wrapper<eye,eye,eye,eye>(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    //shared_gemmpv_wrapper<eye,eye,eye,eye>(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared2_gemmpv_wrapper<eye,eye,eye,eye>(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
 }
 
 template<typename T>

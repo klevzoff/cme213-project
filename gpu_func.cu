@@ -628,9 +628,11 @@ int myGEMM(double const * __restrict__ A,
            double * alpha, double * beta,
            int M, int N, int K) 
 {
-    //simple_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
-    //shared_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
-    shared2_gemm_wrapper(A, B, C, *alpha, *beta, M, N, K);
+    typedef un_ops::identity eye; // shortcut
+    
+    //simple_gemm_wrapper<eye,eye,eye,eye>(A, B, C, *alpha, *beta, M, N, K);
+    //shared_gemm_wrapper<eye,eye,eye,eye>(A, B, C, *alpha, *beta, M, N, K);
+    shared2_gemm_wrapper<eye,eye,eye,eye>(A, B, C, *alpha, *beta, M, N, K);
 
     return 0;
 }
