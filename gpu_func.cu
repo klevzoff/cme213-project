@@ -548,6 +548,11 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
     T lA[Ktile];
     T lC[Ntile];
     
+    for (int lc = 0; lc < Ntile; ++lc)
+    {
+        lC[lc] = T(0);
+    }
+    
     int const num_tiles = (K + Ktile - 1) / Ktile;
     
     int const row = Mtile * blockIdx.y + Ktile * threadIdx.y + threadIdx.x;
