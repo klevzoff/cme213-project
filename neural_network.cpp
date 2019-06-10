@@ -6,6 +6,8 @@
 #include "mpi.h"
 #include "iomanip"
 #include <vector>
+#include <cmath>
+#include <numeric>
 
 #define MPI_SAFE_CALL( call ) do {                               \
     int err = call;                                              \
@@ -490,7 +492,7 @@ template<typename OP, typename T>
 void colreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
 {
     assert(dst.nrow() == 1 && dst.ncol() == src.ncol());
-    reduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
+    colreduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
 }
 
 template<typename OP, typename T>
@@ -505,12 +507,7 @@ template<typename OP, typename T>
 void rowreduce(DeviceMat<T> const & src, DeviceMat<T> & dst)
 {
     assert(dst.ncol() == 1 && dst.nrow() == src.nrow());
-    
-    // TODO proper row reduction without transpose
-    DeviceMat<T> src_temp = transpose(src);
-    DeviceMat<T> dst_temp(1, src_temp.ncol());
-    colreduce<OP>(src_temp, dst_temp);
-    dst = transpose(dst_temp);
+    rowreduce_wrapper<OP>(src.data(), dst.data(), src.nrow(), src.ncol());
 }
 
 template<typename OP, typename T>
@@ -670,15 +667,46 @@ DeviceMat<T> softmax(DeviceMat<T> const & src)
 template<typename T>
 void gemm(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> & C)
 {
+    using eye = un_ops::identity; // shortcut
     assert(C.nrow() == A.nrow() && C.ncol() == B.ncol());
-    simple_gemm_wrapper(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+    shared2_gemm_wrapper<eye,eye,eye,eye>(A.data(), B.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+}
+
+template<typename T>
+void gemmpv(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> const & d, DeviceMat<T> & C)
+{
+    using eye = un_ops::identity; // shortcut
+    assert(C.nrow() == A.nrow() && C.ncol() == B.ncol() && d.nrow() == A.nrow());
+    shared2_gemmpv_wrapper<eye,eye,eye,eye>(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+}
+
+template<typename T>
+void gemmpv_sigmoid(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> const & d, DeviceMat<T> & C)
+{
+    using eye = un_ops::identity; // shortcut
+    assert(C.nrow() == A.nrow() && C.ncol() == B.ncol() && d.nrow() == A.nrow());
+    shared2_gemmpv_wrapper<eye,eye,eye,un_ops::sigmoid>(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+}
+
+template<typename T>
+void gemmpv_exponent(T alpha, DeviceMat<T> const & A, DeviceMat<T> const & B, T beta, DeviceMat<T> const & d, DeviceMat<T> & C)
+{
+    using eye = un_ops::identity; // shortcut
+    assert(C.nrow() == A.nrow() && C.ncol() == B.ncol() && d.nrow() == A.nrow());
+    shared2_gemmpv_wrapper<eye,eye,eye,un_ops::exponent>(A.data(), B.data(), d.data(), C.data(), alpha, beta, A.nrow(), B.ncol(), A.ncol());
+}
+
+template<typename T>
+void matmult(DeviceMat<T> const & A, DeviceMat<T> const & B, DeviceMat<T> & C)
+{
+    gemm(T(1), A, B, T(0), C);
 }
 
 template<typename T>
 DeviceMat<T> matmult(DeviceMat<T> const & A, DeviceMat<T> const & B)
 {
     DeviceMat<T> C(A.nrow(), B.ncol());
-    gemm(T(1), A, B, T(0), C);
+    matmult(A, B, C);
     return C;
 }
 
@@ -749,24 +777,19 @@ struct device_grads
 
 struct device_cache
 {
-    DMat X;
-    std::vector<DMat> z;
     std::vector<DMat> a;
-    DMat yc;
 };
 
-arma::mat to_host(DMat const & dmat)
+void to_host(DMat const & dmat, arma::mat & hmat)
 {
-    arma::mat hmat(dmat.nrow(), dmat.ncol());
+    hmat.resize(dmat.nrow(), dmat.ncol());
     dmat.copy_to_host(hmat.memptr());
-    return hmat;
 }
 
-DMat to_device(arma::mat const & hmat)
+void to_device(arma::mat const & hmat, DMat & dmat)
 {
-    DMat dmat(hmat.n_rows, hmat.n_cols);
+    dmat.resize(hmat.n_rows, hmat.n_cols);
     dmat.copy_from_host(hmat.memptr());
-    return dmat;
 }
 
 void to_device(NeuralNetwork const & hnn, device_nn & dnn)
@@ -777,8 +800,8 @@ void to_device(NeuralNetwork const & hnn, device_nn & dnn)
     dnn.b.resize(hnn.num_layers);
     for (int i = 0; i < hnn.num_layers; ++i)
     {
-        dnn.W[i] = to_device(hnn.W[i]);
-        dnn.b[i] = to_device(hnn.b[i]);
+        to_device(hnn.W[i], dnn.W[i]);
+        to_device(hnn.b[i], dnn.b[i]);
     }
 }
 
@@ -789,8 +812,8 @@ void to_host(device_nn const & dnn, NeuralNetwork & hnn)
     hnn.b.resize(dnn.num_layers);
     for (int i = 0; i < dnn.num_layers; ++i)
     {
-        hnn.W[i] = to_host(dnn.W[i]);
-        hnn.b[i] = to_host(dnn.b[i]);
+        to_host(dnn.W[i], hnn.W[i]);
+        to_host(dnn.b[i], hnn.b[i]);
     }
 }
 
@@ -801,8 +824,8 @@ void to_device(grads const & hgrads, device_grads & dgrads)
     dgrads.db.resize(num_layers);
     for (int i = 0; i < num_layers; ++i)
     {
-        dgrads.dW[i] = to_device(hgrads.dW[i]);
-        dgrads.db[i] = to_device(hgrads.db[i]);
+        to_device(hgrads.dW[i], dgrads.dW[i]);
+        to_device(hgrads.db[i], dgrads.db[i]);
     }
 }
 
@@ -813,9 +836,17 @@ void to_host(device_grads const & dgrads, grads & hgrads)
     hgrads.db.resize(num_layers);
     for (int i = 0; i < num_layers; ++i)
     {
-        hgrads.dW[i] = to_host(dgrads.dW[i]);
-        hgrads.db[i] = to_host(dgrads.db[i]);
+        to_host(dgrads.dW[i], hgrads.dW[i]);
+        to_host(dgrads.db[i], hgrads.db[i]);
     }
+}
+
+void allreduce(DMat & dA, arma::mat & hA)
+{
+    to_host(dA, hA);
+    MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, hA.memptr(), hA.n_rows * hA.n_cols, 
+                                MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
+    to_device(hA, dA);
 }
 
 /**
@@ -823,45 +854,46 @@ void to_host(device_grads const & dgrads, grads & hgrads)
  */ 
 
 void device_feedforward(device_nn const & nn, DMat const & X, device_cache & cache)
-{
-    cache.z.resize(2);
-    cache.a.resize(2);
+{  
+    cache.a[0].resize(nn.W[0].nrow(), X.ncol()); // use fused kernel with sigmoid
+    gemmpv_sigmoid(1.0, nn.W[0], X, 1.0, nn.b[0], cache.a[0]); // M = 100(0), N = 800, K = 784
 
-    assert(X.nrow() == nn.W[0].ncol());
-    cache.X = X;
-    int N = X.ncol();
-
-    cache.z[0] = repmat(nn.b[0], 1, N);
-    gemm(1.0, nn.W[0], X, 1.0, cache.z[0]);
-   
-    cache.a[0] = sigmoid(cache.z[0]);
-
-    assert(cache.a[0].nrow() == nn.W[1].ncol());
-    cache.z[1] = repmat(nn.b[1], 1, N);
-    gemm(1.0, nn.W[1], cache.a[0], 1.0, cache.z[1]);
-
-    cache.a[1] = softmax(cache.z[1]);
-    cache.yc = cache.a[1];
+    cache.a[1].resize(nn.W[1].nrow(), X.ncol()); // use fused kernel with exponent
+    gemmpv_exponent(1.0, nn.W[1], cache.a[0], 1.0, nn.b[1], cache.a[1]); // M = 10, N = 800, K = 100(0)
+    normalize(cache.a[1]);
 }
 
-void device_backprop(device_nn const & nn, DMat const & y, double reg,
-                     device_cache const & bpcache, device_grads & bpgrads)
-{
-    bpgrads.dW.resize(2);
-    bpgrads.db.resize(2);
-    int N = y.ncol();
+void device_backprop(device_nn const & nn, DMat const & Xt, DMat const & y, double reg,
+                     device_cache const & bpcache, device_grads & bpgrads, int N, int num_procs)
+{   
+    static DMat a0t;
+    a0t.resize(bpcache.a[0].ncol(), bpcache.a[0].nrow());
+    transpose(bpcache.a[0], a0t);
 
-    DMat diff = axpby(1.0 / N, bpcache.yc, -1.0 / N, y);
+    static DMat diff;
+    diff.resize(y.nrow(), y.ncol());
+    axpby(1.0 / N, bpcache.a[1], -1.0 / N, y, diff);
+    
     bpgrads.dW[1] = nn.W[1];
-    gemm(1.0, diff, transpose(bpcache.a[0]), reg, bpgrads.dW[1]);
+    gemm(1.0, diff, a0t, reg / num_procs, bpgrads.dW[1]); // M = 10, N = 100(0), K = 800
     bpgrads.db[1] = sum(diff, 1);
     
-    DMat da1 = matmult(transpose(nn.W[1]), diff);
-    DMat dz1 = sigmoid_derivative(bpcache.a[0]);
+    static DMat W1t;
+    W1t.resize(nn.W[1].ncol(), nn.W[1].nrow());
+    transpose(nn.W[1], W1t);
+    
+    static DMat da1;
+    da1.resize(W1t.nrow(), diff.ncol());  
+    matmult(W1t, diff, da1); // M = 100(0), N = 800, K = 10
+    
+    static DMat dz1;
+    dz1.resize(da1.nrow(), da1.ncol());
+    sigmoid_derivative(bpcache.a[0], dz1);
     hadamard(da1, dz1, dz1);
     
     bpgrads.dW[0] = nn.W[0];
-    gemm(1.0, dz1, transpose(bpcache.X), reg, bpgrads.dW[0]);
+    gemm(1.0, dz1, Xt, reg / num_procs, bpgrads.dW[0]); // M = 100(0), N = 784, K = 800
+    
     bpgrads.db[0] = sum(dz1, 1);
 }
 
@@ -883,81 +915,123 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
     error_file.open("Outputs/CpuGpuDiff.txt");
     int print_flag = 0;
     
+    int const num_batches = (N + batch_size - 1) / batch_size;
+    
+    std::vector<DMat> X_batch(num_batches);
+    std::vector<DMat> Xt_batch(num_batches);
+    std::vector<DMat> y_batch(num_batches);
+    std::vector<int> num_col(num_batches);
+    
+    // distribute the input
+    for (int batch = 0; batch < num_batches; ++batch)
+    {         
+        int const first_col = batch * batch_size;
+        int const last_col = std::min((batch + 1)*batch_size-1, N-1);
+        num_col[batch] = last_col - first_col + 1;
+        
+        // trying to get as fair a distribution as possible
+        double const nc_per_rank = double(num_col[batch]) / num_procs;
+        std::vector<int> num_col_rank(num_procs);
+        std::vector<int> sendcounts_X(num_procs);
+        std::vector<int> sendcounts_y(num_procs);
+
+        for (int irank = 0; irank < num_procs; ++irank)
+        {
+            num_col_rank[irank] = static_cast<int>(std::lround((irank+1) * nc_per_rank) - std::lround(irank * nc_per_rank));
+            sendcounts_X[irank] = num_col_rank[irank] * nn.H[0];
+            sendcounts_y[irank] = num_col_rank[irank] * nn.H[nn.num_layers];
+        }
+        
+        std::vector<int> senddispls_X(num_procs, 0);
+        std::vector<int> senddispls_y(num_procs, 0);
+        std::partial_sum(sendcounts_X.begin(), sendcounts_X.end()-1, senddispls_X.begin()+1);
+        std::partial_sum(sendcounts_y.begin(), sendcounts_y.end()-1, senddispls_y.begin()+1);
+       
+        arma::mat X_batch_host(nn.H[0], num_col_rank[rank]);
+        arma::mat y_batch_host(nn.H[nn.num_layers], num_col_rank[rank]);
+
+        double const * const X_sendbuf = (rank == 0) ? X.colptr(first_col) : nullptr;
+        double const * const y_sendbuf = (rank == 0) ? y.colptr(first_col) : nullptr;
+
+        MPI_SAFE_CALL(MPI_Scatterv(X_sendbuf, sendcounts_X.data(), senddispls_X.data(), MPI_DOUBLE, 
+                                   X_batch_host.memptr(), sendcounts_X[rank], MPI_DOUBLE, 
+                                   0, MPI_COMM_WORLD));
+
+        MPI_SAFE_CALL(MPI_Scatterv(y_sendbuf, sendcounts_y.data(), senddispls_y.data(), MPI_DOUBLE, 
+                                   y_batch_host.memptr(), sendcounts_y[rank], MPI_DOUBLE, 
+                                   0, MPI_COMM_WORLD));
+
+        to_device(X_batch_host, X_batch[batch]);
+        to_device(y_batch_host, y_batch[batch]);
+        Xt_batch[batch] = transpose(X_batch[batch]);
+    }
+    
     // copy the whole network onto device
     device_nn dnn;
     to_device(nn, dnn);
 
     int iter = 0;
 
+    device_cache bpcache;
+    device_grads bpgrads;
+    grads host_grads;
+    
+    bpcache.a.resize(2);
+    bpgrads.dW.resize(2);
+    bpgrads.db.resize(2);
+    host_grads.dW.resize(2);
+    host_grads.db.resize(2);
+    
     for (int epoch = 0; epoch < epochs; ++epoch)
     {
-        int num_batches = (N + batch_size - 1) / batch_size;
-
         for (int batch = 0; batch < num_batches; ++batch)
-        {         
-            int const first_col = batch * batch_size;
-            int const last_col = std::min((batch + 1)*batch_size-1, N-1);
-            int const num_col = last_col - first_col + 1;
-            int const num_col_rank = num_col / num_procs; // assume equal for now
-            
-            arma::mat X_batch(nn.H[0], num_col_rank);
-            arma::mat y_batch(nn.H[nn.num_layers], num_col_rank);
-            
-            double const * const X_sendbuf = (rank == 0) ? X.colptr(first_col) : nullptr;
-            double const * const y_sendbuf = (rank == 0) ? y.colptr(first_col) : nullptr;
-                            
-            MPI_SAFE_CALL(MPI_Scatter(X_sendbuf, num_col_rank * nn.H[0], MPI_DOUBLE, 
-                                      X_batch.memptr(), num_col_rank * nn.H[0], MPI_DOUBLE, 
-                                      0, MPI_COMM_WORLD));
-            
-            MPI_SAFE_CALL(MPI_Scatter(y_sendbuf, num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
-                                      y_batch.memptr(), num_col_rank * nn.H[nn.num_layers], MPI_DOUBLE, 
-                                      0, MPI_COMM_WORLD));
-            
-            DMat dX_batch = to_device(X_batch);
-            DMat dy_batch = to_device(y_batch);
+        {                  
+            DMat const & dX_batch  = X_batch[batch];
+            DMat const & dXt_batch = Xt_batch[batch];
+            DMat const & dy_batch  = y_batch[batch];
 
-            device_cache bpcache;
             device_feedforward(dnn, dX_batch, bpcache);
-
-            device_grads bpgrads;
-            device_backprop(dnn, dy_batch, reg, bpcache, bpgrads);
+            device_backprop(dnn, dXt_batch, dy_batch, reg, bpcache, bpgrads, num_col[batch], num_procs);
             
+            // the code below works properly, but commented out to avoid losing time  
+            /*
             if (print_every > 0 && iter % print_every == 0)
             {
                 to_host(dnn, nn);
                 
+                arma::mat hy_batch;
+                to_host(dy_batch, hy_batch);
+                
                 if (grad_check)
                 {
+                    arma::mat hX_batch;
+                    to_host(dX_batch, hX_batch);
+                
                     grads numgrads;
-                    numgrad(nn, X_batch, y_batch, reg, numgrads);
+                    numgrad(nn, hX_batch, hy_batch, reg, numgrads);
                     
                     grads host_bpgrads;
                     to_host(bpgrads, host_bpgrads);
                     
                     assert(gradcheck(numgrads, host_bpgrads));
                 }
+                
+                arma::mat a1;
+                to_host(bpcache.a[1], a1);
 
-                arma::mat yc = to_host(bpcache.yc);
                 std::cout << "Loss at iteration " << iter << " of epoch " << epoch << "/" <<
-                          epochs << " = " << loss(nn, yc, y_batch, reg) << "\n";
+                          epochs << " = " << loss(nn, a1, hy_batch, reg) << "\n";
             }
+            */
             
             // Gradient descent step
             for (int i = 0; i < dnn.num_layers; ++i)
             {
-                arma::mat dW = to_host(bpgrads.dW[i]);
-                MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, dW.memptr(), dW.n_rows * dW.n_cols, 
-                                            MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
-                dW /= num_procs;
-                bpgrads.dW[i] = to_device(dW);
-
-                arma::mat db = to_host(bpgrads.db[i]);
-                MPI_SAFE_CALL(MPI_Allreduce(MPI_IN_PLACE, db.memptr(), db.n_rows * db.n_cols, 
-                                            MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD));
-                db /= num_procs;
-                bpgrads.db[i] = to_device(db);
-                              
+                if (num_procs > 1)
+                {
+                    allreduce(bpgrads.dW[i], host_grads.dW[i]);
+                    allreduce(bpgrads.db[i], host_grads.db[i]);
+                }
                 axpby(1.0, dnn.W[i], -learning_rate, bpgrads.dW[i], dnn.W[i]);
                 axpby(1.0, dnn.b[i], -learning_rate, bpgrads.db[i], dnn.b[i]);
             }
@@ -971,13 +1045,14 @@ void parallel_train(NeuralNetwork& nn, const arma::mat& X, const arma::mat& y,
                 print_flag = iter % print_every == 0;
             }
 
-            /* Following debug routine assumes that you have already updated the arma
-               matrices in the NeuralNetwork nn.  */
+            // the code below works properly, but commented out to avoid losing time  
+            /*
             if (debug && rank == 0 && print_flag)
             {
                 to_host(dnn, nn); // copy network onto host for debugging output
                 write_diff_gpu_cpu(nn, iter, error_file);
             }
+            */
 
             iter++;
         }
