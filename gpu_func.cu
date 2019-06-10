@@ -33,8 +33,98 @@ int useless_gpu_add_one(int t) {
     return result;
 }
 
-// all matrices assumed column major
-template<typename T>
+/* ================================ operators =============================== */
+
+namespace un_ops
+{
+
+struct identity
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x) 
+    { 
+        return x;
+    }
+};
+    
+struct exponent
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x) 
+    { 
+        return exp(x);
+    }
+};
+    
+struct sigmoid
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x) 
+    { 
+        return T(1) / (T(1) + exp(-x));
+    }
+};
+    
+struct x_times_1_minus_x // does this have a special name?
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x) 
+    { 
+        return x * (1 - x);
+    }
+};
+    
+}
+
+namespace bin_ops
+{
+
+struct add 
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x0, T const & x1)
+    {
+        return x0 + x1;
+    }
+    
+    template<typename T>
+    static __forceinline__ __device__ void atomic(T & x0, T const & x1)
+    {
+        atomicAdd(&x0, x1);
+    }
+};
+    
+struct mult 
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x0, T const & x1)
+    {
+        return x0 * x1;
+    }
+    
+    // no atomic version in CUDA
+};
+ 
+struct greater_of
+{
+    template<typename T>
+    static __forceinline__ __device__ T apply(T const & x0, T const & x1)
+    {
+        return max(x0, x1);
+    }
+    
+    template<typename T>
+    static __forceinline__ __device__ void atomic(T & x0, T const & x1)
+    {
+        atomicMax(&x0, x1); // only supported for unsigned int and long long 
+    }
+};
+    
+}
+
+/* =============================== simple GEMM ============================== */
+
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 __global__ void simple_gemm_kernel(T const * __restrict__ A,
                                    T const * __restrict__ B,
                                    T * __restrict__ C,
@@ -49,16 +139,16 @@ __global__ void simple_gemm_kernel(T const * __restrict__ A,
     
     if (col < N)
     {
-        T res = beta * C[col * M + row];
+        T res = beta * OP_C::template apply(C[col * M + row]);
         for (int k = 0; k < K; ++k)
         {
-            res += alpha * A[k * M + row] * B[col * K + k];
+            res += alpha * OP_A::template apply(A[k * M + row]) * OP_B::template apply(B[col * K + k]);
         }
-        C[col * M + row] = res;
+        C[col * M + row] = OP_R::template apply(res);
     }
 }
 
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void simple_gemm_wrapper(T const * __restrict__ A,
                          T const * __restrict__ B,
                          T * __restrict__ C,
@@ -68,14 +158,14 @@ void simple_gemm_wrapper(T const * __restrict__ A,
     int const threads = 192;
     int const blocks = (M * N + threads - 1) / threads;
     
-    simple_gemm_kernel<<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    simple_gemm_kernel<OP_A, OP_B, OP_C, OP_R><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
     
     check_launch("simple_gemm");
 }
 
 // gemmpv = general matrix-matrix plus vector
 // i.e. C = alpha * A * B + beta * repmat(d, 1, N)
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 __global__ void simple_gemmpv_kernel(T const * __restrict__ A,
                                      T const * __restrict__ B,
                                      T const * __restrict__ d,
@@ -91,16 +181,16 @@ __global__ void simple_gemmpv_kernel(T const * __restrict__ A,
     
     if (col < N)
     {
-        T res = beta * d[row];
+        T res = beta * OP_C::template apply(d[row]);
         for (int k = 0; k < K; ++k)
         {
-            res += alpha * A[k * M + row] * B[col * K + k];
+            res += alpha * OP_A::template apply(A[k * M + row]) * OP_B::template apply(B[col * K + k]);
         }
-        C[col * M + row] = res;
+        C[col * M + row] = OP_R::template apply(res);
     }
 }
 
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void simple_gemmpv_wrapper(T const * __restrict__ A,
                            T const * __restrict__ B,
                            T const * __restrict__ d,
@@ -111,12 +201,14 @@ void simple_gemmpv_wrapper(T const * __restrict__ A,
     int const threads = 192;
     int const blocks = (M * N + threads - 1) / threads;
     
-    simple_gemmpv_kernel<<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    simple_gemmpv_kernel<OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
     
     check_launch("simple_gemmpv");
 }
 
-template<int warp_size, int num_warps, typename T>
+/* ============================== shared GEMM 1 ============================= */
+
+template<int warp_size, int num_warps, typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 __global__ void shared_gemm_kernel(T const * __restrict__ A,
                                    T const * __restrict__ B,
                                    T * __restrict__ C,
@@ -143,7 +235,7 @@ __global__ void shared_gemm_kernel(T const * __restrict__ A,
         int const col = warp_size * blockIdx.y + local_col;
         if (row < M && col < N)
         {
-            lC[pass] = beta * C[col * M + row];
+            lC[pass] = beta * OP_C::template apply(C[col * M + row]);
         }
     }
     
@@ -162,11 +254,11 @@ __global__ void shared_gemm_kernel(T const * __restrict__ A,
             
             if (row < M && inner_col < K)
             {
-                sA[local_col][local_row] = A[inner_col * M + row];
+                sA[local_col][local_row] = OP_A::template apply(A[inner_col * M + row]);
             }
             if (col < N && inner_row < K)
             {
-                sB[local_row][local_col] = B[col * K + inner_row];
+                sB[local_row][local_col] = OP_B::template apply(B[col * K + inner_row]);
             }
         }
 
@@ -196,12 +288,12 @@ __global__ void shared_gemm_kernel(T const * __restrict__ A,
         int const col = warp_size * blockIdx.y + local_col;
         if (row < M && col < N)
         {
-            C[col * M + row] = lC[pass];
+            C[col * M + row] = OP_R::template apply(lC[pass]);
         }
     }
 }
 
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared_gemm_wrapper(T const * __restrict__ A,
                          T const * __restrict__ B,
                          T * __restrict__ C,
@@ -214,12 +306,12 @@ void shared_gemm_wrapper(T const * __restrict__ A,
     dim3 const threads(warp_size, num_warps);
     dim3 const blocks((M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y);
     
-    shared_gemm_kernel<warp_size, num_warps><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    shared_gemm_kernel<warp_size,num_warps,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
     
     check_launch("shared_gemm");
 }
 
-template<int warp_size, int num_warps, typename T>
+template<int warp_size, int num_warps, typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 __global__ void shared_gemmpv_kernel(T const * __restrict__ A,
                                      T const * __restrict__ B,
                                      T const * __restrict__ d,
@@ -247,7 +339,7 @@ __global__ void shared_gemmpv_kernel(T const * __restrict__ A,
         int const col = warp_size * blockIdx.y + local_col;
         if (row < M && col < N)
         {
-            lC[pass] = beta * d[row];
+            lC[pass] = beta * OP_C::template apply(d[row]);
         }
     }
     
@@ -266,11 +358,11 @@ __global__ void shared_gemmpv_kernel(T const * __restrict__ A,
             
             if (row < M && inner_col < K)
             {
-                sA[local_col][local_row] = A[inner_col * M + row];
+                sA[local_col][local_row] = OP_A::template apply(A[inner_col * M + row]);
             }
             if (col < N && inner_row < K)
             {
-                sB[local_row][local_col] = B[col * K + inner_row];
+                sB[local_row][local_col] = OP_B::template apply(B[col * K + inner_row]);
             }
         }
 
@@ -300,12 +392,12 @@ __global__ void shared_gemmpv_kernel(T const * __restrict__ A,
         int const col = warp_size * blockIdx.y + local_col;
         if (row < M && col < N)
         {
-            C[col * M + row] = lC[pass];
+            C[col * M + row] = OP_R::template apply(lC[pass]);
         }
     }
 }
 
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared_gemmpv_wrapper(T const * __restrict__ A,
                            T const * __restrict__ B,
                            T const * __restrict__ d,
@@ -319,12 +411,14 @@ void shared_gemmpv_wrapper(T const * __restrict__ A,
     dim3 const threads(warp_size, num_warps);
     dim3 const blocks((M + threads.x - 1) / threads.x, (N + threads.y - 1) / threads.y);
     
-    shared_gemmpv_kernel<warp_size, num_warps><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    shared_gemmpv_kernel<warp_size,num_warps,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
     
     check_launch("shared_gemmpv");
 }
 
-template<int Mtile, int Ktile, typename T>
+/* ============================== shared GEMM 2 ============================= */
+
+template<int Mtile, int Ktile, typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 __global__ void shared2_gemm_kernel(T const * __restrict__ A,
                                     T const * __restrict__ B,
                                     T * __restrict__ C,
@@ -354,7 +448,7 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
         
         if ((col_offset + threadIdx.y) < N && (tile_offset + threadIdx.x) < K)
         {
-            sB[threadIdx.y][threadIdx.x] = B[(col_offset + threadIdx.y) * K + tile_offset + threadIdx.x];
+            sB[threadIdx.y][threadIdx.x] = OP_B::template apply(B[(col_offset + threadIdx.y) * K + tile_offset + threadIdx.x]);
         }
         else
         {
@@ -370,7 +464,7 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
             {
                 if (tile_offset + k < K)
                 {
-                    lA[k] = A[(tile_offset + k) * M + row];
+                    lA[k] = OP_A::template apply(A[(tile_offset + k) * M + row]);
                 }
                 else
                 {
@@ -400,32 +494,32 @@ __global__ void shared2_gemm_kernel(T const * __restrict__ A,
         {
             if (col_offset + lc < N)
             {
-                C[(col_offset + lc) * M + row] = beta * C[(col_offset + lc) * M + row] + alpha * lC[lc];
+                C[(col_offset + lc) * M + row] = OP_R::template apply(beta * OP_C::template apply(C[(col_offset + lc) * M + row]) + alpha * lC[lc]);
             }
         }
     }
 }
 
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared2_gemm_wrapper(T const * __restrict__ A,
                           T const * __restrict__ B,
                           T * __restrict__ C,
                           T const alpha, T const beta,
                           int M, int N, int K) 
 {
-    int const Mtile = 128;
-    int const Ktile = 8;
+    int const Mtile = 64;
+    int const Ktile = 4;
     int const Ntile = Mtile / Ktile;
 
     dim3 const threads(Ktile, Ntile);
     dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-    shared2_gemm_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
+    shared2_gemm_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, C, alpha, beta, M, N, K);
     
     check_launch("shared2_gemm");
 }
 
-template<int Mtile, int Ktile, typename T>
+template<int Mtile, int Ktile, typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
                                       T const * __restrict__ B,
                                       T const * __restrict__ d,
@@ -451,7 +545,7 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
         
         if ((col_offset + threadIdx.y) < N && (tile_offset + threadIdx.x) < K)
         {
-            sB[threadIdx.y][threadIdx.x] = B[(col_offset + threadIdx.y) * K + tile_offset + threadIdx.x];
+            sB[threadIdx.y][threadIdx.x] = OP_B::template apply(B[(col_offset + threadIdx.y) * K + tile_offset + threadIdx.x]);
         }
         else
         {
@@ -467,7 +561,7 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
             {
                 if (tile_offset + k < K)
                 {
-                    lA[k] = A[(tile_offset + k) * M + row];
+                    lA[k] = OP_A::template apply(A[(tile_offset + k) * M + row]);
                 }
                 else
                 {
@@ -497,13 +591,13 @@ __global__ void shared2_gemmpv_kernel(T const * __restrict__ A,
         {
             if (col_offset + lc < N)
             {
-                C[(col_offset + lc) * M + row] = beta * d[row] + alpha * lC[lc];
+                C[(col_offset + lc) * M + row] = OP_R::template apply(beta * OP_C::template apply(d[row]) + alpha * lC[lc]);
             }
         }
     }
 }
 
-template<typename T>
+template<typename OP_A, typename OP_B, typename OP_C, typename OP_R, typename T>
 void shared2_gemmpv_wrapper(T const * __restrict__ A, 
                             T const * __restrict__ B, 
                             T const * __restrict__ d, 
@@ -511,49 +605,16 @@ void shared2_gemmpv_wrapper(T const * __restrict__ A,
                             T const alpha, T const beta,
                             int M, int N, int K) 
 {    
-    int const Mtile = 128;
-    int const Ktile = 8;
+    int const Mtile = 64;
+    int const Ktile = 4;
     int const Ntile = Mtile / Ktile;
 
     dim3 const threads(Ktile, Ntile);
     dim3 const blocks((N + Ntile - 1) / Ntile, (M + Mtile - 1) / Mtile);
 
-    shared2_gemmpv_kernel<Mtile, Ktile><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
+    shared2_gemmpv_kernel<Mtile,Ktile,OP_A,OP_B,OP_C,OP_R><<<blocks, threads>>>(A, B, d, C, alpha, beta, M, N, K);
     
     check_launch("shared2_gemmpv");
-}
-
-/* ============= shared3 gemm kernel (hierarchical tiling GEMM) ============ */
-
-template<typename T, T M_, T N_, T K_>
-struct triplet
-{
-    static T const M = M_;
-    static T const N = N_;
-    static T const K = K_;
-};
-
-template<typename BlockDims, typename WarpDims, typename ThreadDims, typename T>
-__global__ void shared3_gemm_kernel(T const * __restrict__ A,
-                                    T const * __restrict__ B,
-                                    T * __restrict__ C,
-                                    T const alpha,
-                                    T const beta,
-                                    int M, int N, int K)
-{
-    
-}
-
-template<typename T>
-void shared3_gemmpv_wrapper(T const * __restrict__ A, 
-                            T const * __restrict__ B, 
-                            T const * __restrict__ d, 
-                            T * __restrict__ C,
-                            T const alpha, T const beta,
-                            int M, int N, int K)
-{
-    typedef triplet<int, 32, 32, 16> BlockDims;
-    typedef triplet<int, 8, 4, 1>    WarpDims;
 }
 
 /* ================================= myGEMM ================================ */
@@ -574,83 +635,7 @@ int myGEMM(double const * __restrict__ A,
     return 0;
 }
 
-namespace un_ops
-{
-    
-struct exponent
-{
-    template<typename T>
-    static inline __device__ T apply(T const & x) 
-    { 
-        return exp(x);
-    }
-};
-    
-struct sigmoid
-{
-    template<typename T>
-    static inline __device__ T apply(T const & x) 
-    { 
-        return T(1) / (T(1) + exp(-x));
-    }
-};
-    
-struct x_times_1_minus_x // does this have a special name?
-{
-    template<typename T>
-    static inline __device__ T apply(T const & x) 
-    { 
-        return x * (1 - x);
-    }
-};
-    
-}
-
-namespace bin_ops
-{
-
-struct add 
-{
-    template<typename T>
-    static inline __device__ T apply(T const & x0, T const & x1)
-    {
-        return x0 + x1;
-    }
-    
-    template<typename T>
-    static inline __device__ void atomic(T & x0, T const & x1)
-    {
-        atomicAdd(&x0, x1);
-    }
-};
-    
-struct mult 
-{
-    template<typename T>
-    static inline __device__ T apply(T const & x0, T const & x1)
-    {
-        return x0 * x1;
-    }
-    
-    // no atomic version in CUDA
-};
- 
-struct greater_of
-{
-    template<typename T>
-    static inline __device__ T apply(T const & x0, T const & x1)
-    {
-        return max(x0, x1);
-    }
-    
-    template<typename T>
-    static inline __device__ void atomic(T & x0, T const & x1)
-    {
-        atomicMax(&x0, x1); // only supported for unsigned int and long long 
-    }
-};
-    
-}
+/* ============================== transpose ============================= */
 
 template<int warp_size, int num_warps, typename T>
 __global__ void transpose_kernel(T const * __restrict__ src,  T * __restrict__ dst, int M, int N)
@@ -713,6 +698,8 @@ void transpose_wrapper(T const * src, T * dst, int M, int N)
     check_launch("transpose");
 }
 
+/* ============================== reductions ============================= */
+
 template<int block_size, typename OP, typename T>
 __global__ void block_reduce_kernel(T const * __restrict__ data, T * __restrict__ res, int M, int N)
 {
@@ -773,7 +760,7 @@ void reduce_wrapper(T const * data, T * res, int M, int N)
     cudaFree(block_res);
 }
 
-
+/* ============================== other kernels ============================= */
 
 template<typename T>
 __global__ void coldiv_kernel(T * __restrict__ data, T const * __restrict__ divs, int M, int N)
@@ -873,12 +860,12 @@ void axpby_wrapper(T a, T const * X, T b, T const * Y, T * Z, int N)
  */
 
 #define INST_WRAPPER_TEMPLATES(T) \
-template void simple_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void simple_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void shared_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void shared_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void shared2_gemm_wrapper<T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
-template void shared2_gemmpv_wrapper<T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void simple_gemm_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void simple_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared_gemm_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared2_gemm_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T * C, T const alpha, T const beta, int M, int N, int K); \
+template void shared2_gemmpv_wrapper<un_ops::identity,un_ops::identity,un_ops::identity,un_ops::identity,T>(T const * A, T const * B, T const * d, T * C, T const alpha, T const beta, int M, int N, int K); \
 template void transpose_wrapper<T>(T const * src, T * dst, int M, int N); \
 template void reduce_wrapper<bin_ops::add,T>(T const * data, T * res, int M, int N); \
 template void reduce_wrapper<bin_ops::greater_of,T>(T const * data, T * res, int M, int N); \
